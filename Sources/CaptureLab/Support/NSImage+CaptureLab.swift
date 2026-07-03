@@ -38,16 +38,22 @@ extension NSImage {
             switch annotation.kind {
             case .arrow:
                 drawCaptureLabArrow(annotation.imagePoints(in: size), in: size)
+            case .line:
+                drawCaptureLabLine(annotation.imagePoints(in: size), in: size)
             case .rectangle:
                 let rect = annotation.imageRect(in: size)
                 let path = NSBezierPath(rect: rect)
                 path.lineWidth = max(3, min(size.width, size.height) * 0.004)
                 NSColor.systemRed.setStroke()
                 path.stroke()
+            case .counter:
+                drawCaptureLabCounter(annotation.text.isEmpty ? "1" : annotation.text, rect: annotation.imageRect(in: size))
             case .brush:
                 drawCaptureLabBrush(annotation.imagePoints(in: size), in: size)
             case .text:
                 drawCaptureLabText(annotation.text.isEmpty ? "Text" : annotation.text, rect: annotation.imageRect(in: size), in: size)
+            case .highlight:
+                drawCaptureLabHighlight(rect: annotation.imageRect(in: size))
             case .mosaic:
                 drawCaptureLabMosaic(annotation, in: size)
             }
@@ -91,6 +97,25 @@ extension NSImage {
         path.stroke()
     }
 
+    private func drawCaptureLabLine(_ points: [CGPoint], in imageSize: CGSize) {
+        guard points.count >= 2,
+              let start = points.first,
+              let end = points.last
+        else {
+            return
+        }
+
+        let path = NSBezierPath()
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.lineWidth = max(3, min(imageSize.width, imageSize.height) * 0.004)
+        path.move(to: start)
+        path.line(to: end)
+
+        NSColor.systemRed.setStroke()
+        path.stroke()
+    }
+
     private func drawCaptureLabBrush(_ points: [CGPoint], in imageSize: CGSize) {
         guard let first = points.first, points.count >= 2 else {
             return
@@ -107,6 +132,39 @@ extension NSImage {
 
         NSColor.systemRed.setStroke()
         path.stroke()
+    }
+
+    private func drawCaptureLabCounter(_ value: String, rect: CGRect) {
+        guard rect.width > 0, rect.height > 0 else {
+            return
+        }
+
+        let diameter = max(16, min(rect.width, rect.height))
+        let circleRect = CGRect(
+            x: rect.midX - diameter / 2,
+            y: rect.midY - diameter / 2,
+            width: diameter,
+            height: diameter
+        )
+        NSColor.systemRed.setFill()
+        NSBezierPath(ovalIn: circleRect).fill()
+
+        let fontSize = max(12, diameter * 0.48)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph
+        ]
+        let textHeight = fontSize * 1.18
+        let textRect = CGRect(
+            x: circleRect.minX,
+            y: circleRect.midY - textHeight / 2,
+            width: circleRect.width,
+            height: textHeight
+        )
+        (value as NSString).draw(in: textRect, withAttributes: attributes)
     }
 
     private func drawCaptureLabText(_ text: String, rect: CGRect, in imageSize: CGSize) {
@@ -126,6 +184,15 @@ extension NSImage {
         ]
         let textRect = rect.insetBy(dx: 2, dy: max(0, (rect.height - fontSize * 1.25) / 2))
         (text as NSString).draw(in: textRect, withAttributes: attributes)
+    }
+
+    private func drawCaptureLabHighlight(rect: CGRect) {
+        guard rect.width > 0, rect.height > 0 else {
+            return
+        }
+
+        NSColor.systemYellow.withAlphaComponent(0.42).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
     }
 
     private func drawCaptureLabMosaic(_ annotation: CaptureAnnotation, in imageSize: CGSize) {

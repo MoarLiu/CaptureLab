@@ -169,7 +169,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         switch kind {
         case .brush:
             interaction = .brushing(points: [CaptureGeometry.clamped(point, to: imageRect)])
-        case .arrow, .rectangle, .text, .mosaic:
+        case .arrow, .line, .rectangle, .counter, .text, .highlight, .mosaic:
             let clamped = CaptureGeometry.clamped(point, to: imageRect)
             interaction = .creating(kind: kind, start: clamped, current: clamped)
         }
@@ -278,14 +278,16 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         current: CGPoint,
         imageRect: CGRect
     ) {
-        if kind == .arrow {
+        if kind == .arrow || kind == .line {
             guard hypot(current.x - start.x, current.y - start.y) >= 8 else {
                 return
             }
-            commit(.arrow(
-                start: CaptureGeometry.normalizedPoint(from: start, in: imageRect),
-                end: CaptureGeometry.normalizedPoint(from: current, in: imageRect)
-            ))
+            let normalizedStart = CaptureGeometry.normalizedPoint(from: start, in: imageRect)
+            let normalizedEnd = CaptureGeometry.normalizedPoint(from: current, in: imageRect)
+            commit(kind == .arrow
+                ? .arrow(start: normalizedStart, end: normalizedEnd)
+                : .line(start: normalizedStart, end: normalizedEnd)
+            )
             return
         }
 
@@ -296,9 +298,13 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             height: abs(current.y - start.y)
         )
         switch kind {
-        case .rectangle, .mosaic:
+        case .rectangle, .highlight, .mosaic:
             let normalized = CaptureGeometry.normalizedRect(from: displayRect, in: imageRect)
             commit(CaptureAnnotation(kind: kind, normalizedRect: normalized))
+        case .counter:
+            let counterRect = counterDisplayRect(start: start, current: current, imageRect: imageRect)
+            let normalized = CaptureGeometry.normalizedRect(from: counterRect, in: imageRect)
+            commit(CaptureAnnotation(kind: .counter, normalizedRect: normalized, text: nextCounterText()))
         case .text:
             let textRect = textDisplayRect(start: start, current: current, imageRect: imageRect)
             let normalized = CaptureGeometry.normalizedRect(from: textRect, in: imageRect)
@@ -306,7 +312,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             if commit(annotation) {
                 beginEditingText(annotationID: annotation.id)
             }
-        case .arrow, .brush:
+        case .arrow, .line, .brush:
             return
         }
     }
@@ -356,11 +362,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
         switch interaction {
         case .creating(let kind, let start, let current):
-            if kind == .arrow {
-                return .arrow(
-                    start: CaptureGeometry.normalizedPoint(from: start, in: imageRect),
-                    end: CaptureGeometry.normalizedPoint(from: current, in: imageRect)
-                )
+            if kind == .arrow || kind == .line {
+                let normalizedStart = CaptureGeometry.normalizedPoint(from: start, in: imageRect)
+                let normalizedEnd = CaptureGeometry.normalizedPoint(from: current, in: imageRect)
+                return kind == .arrow
+                    ? .arrow(start: normalizedStart, end: normalizedEnd)
+                    : .line(start: normalizedStart, end: normalizedEnd)
             }
             let displayRect = CGRect(
                 x: min(start.x, current.x),
@@ -374,6 +381,16 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                     from: textDisplayRect(start: start, current: current, imageRect: imageRect),
                     in: imageRect
                 ))
+            }
+            if kind == .counter {
+                return CaptureAnnotation(
+                    kind: .counter,
+                    normalizedRect: CaptureGeometry.normalizedRect(
+                        from: counterDisplayRect(start: start, current: current, imageRect: imageRect),
+                        in: imageRect
+                    ),
+                    text: nextCounterText()
+                )
             }
             return CaptureAnnotation(kind: kind, normalizedRect: normalized)
         case .brushing(let points):
@@ -390,7 +407,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                 return false
             }
             switch annotation.kind {
-            case .arrow:
+            case .arrow, .line:
                 let points = annotation.points(in: imageRect)
                 guard points.count >= 2 else { return false }
                 return distance(from: point, toSegmentFrom: points[0], to: points[1]) <= 10
@@ -399,7 +416,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                 return zip(points, points.dropFirst()).contains { start, end in
                     distance(from: point, toSegmentFrom: start, to: end) <= 10
                 }
-            case .rectangle, .text, .mosaic:
+            case .rectangle, .counter, .text, .highlight, .mosaic:
                 return annotation.rect(in: imageRect).insetBy(dx: -8, dy: -8).contains(point)
             }
         }
@@ -411,7 +428,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
 
         switch selected.kind {
-        case .arrow:
+        case .arrow, .line:
             let points = selected.points(in: imageRect)
             guard points.count >= 2 else {
                 return nil
@@ -427,7 +444,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                     ))
                 }
             }
-        case .rectangle, .text, .mosaic, .brush:
+        case .rectangle, .counter, .text, .highlight, .mosaic, .brush:
             let rect = selected.rect(in: imageRect).expandedToMinimumSize(width: 18, height: 18)
             for handle in ResizeHandle.allCases {
                 if handleRect(center: handle.position(in: rect), size: 18).contains(point) {
@@ -454,6 +471,8 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         switch annotation.kind {
         case .arrow:
             drawArrow(points: annotation.points(in: imageRect), alpha: alpha)
+        case .line:
+            drawLine(points: annotation.points(in: imageRect), alpha: alpha)
         case .brush:
             drawBrush(points: annotation.points(in: imageRect), alpha: alpha)
         case .rectangle:
@@ -462,8 +481,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             let path = NSBezierPath(rect: rect)
             path.lineWidth = 3
             path.stroke()
+        case .counter:
+            drawCounter(annotation, imageRect: imageRect, alpha: alpha)
         case .text:
             drawText(annotation, imageRect: imageRect, alpha: alpha)
+        case .highlight:
+            drawHighlight(annotation, imageRect: imageRect, alpha: alpha)
         case .mosaic:
             let rect = annotation.rect(in: imageRect)
             drawPixelatedRegion(annotation: annotation, rect: rect, document: document, alpha: alpha)
@@ -483,6 +506,44 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let text = annotation.text.isEmpty ? "Text" : annotation.text
         let textRect = rect.insetBy(dx: 2, dy: max(0, (rect.height - fontSize * 1.25) / 2))
         (text as NSString).draw(in: textRect, withAttributes: attributes)
+    }
+
+    private func drawCounter(_ annotation: CaptureAnnotation, imageRect: CGRect, alpha: CGFloat) {
+        let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 24, height: 24)
+        let diameter = min(rect.width, rect.height)
+        let circleRect = CGRect(
+            x: rect.midX - diameter / 2,
+            y: rect.midY - diameter / 2,
+            width: diameter,
+            height: diameter
+        )
+
+        NSColor.systemRed.withAlphaComponent(alpha).setFill()
+        NSBezierPath(ovalIn: circleRect).fill()
+
+        let value = annotation.text.isEmpty ? "1" : annotation.text
+        let fontSize = max(12, diameter * 0.48)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
+            .foregroundColor: NSColor.white.withAlphaComponent(alpha),
+            .paragraphStyle: paragraph
+        ]
+        let textHeight = fontSize * 1.18
+        let textRect = CGRect(
+            x: circleRect.minX,
+            y: circleRect.midY - textHeight / 2,
+            width: circleRect.width,
+            height: textHeight
+        )
+        (value as NSString).draw(in: textRect, withAttributes: attributes)
+    }
+
+    private func drawHighlight(_ annotation: CaptureAnnotation, imageRect: CGRect, alpha: CGFloat) {
+        let rect = annotation.rect(in: imageRect)
+        NSColor.systemYellow.withAlphaComponent(0.42 * alpha).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
     }
 
     private func beginEditingText(annotationID: UUID) {
@@ -591,6 +652,21 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         path.stroke()
     }
 
+    private func drawLine(points: [CGPoint], alpha: CGFloat) {
+        guard points.count >= 2 else {
+            return
+        }
+        let path = NSBezierPath()
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.lineWidth = 3
+        path.move(to: points[0])
+        path.line(to: points[1])
+
+        NSColor.systemRed.withAlphaComponent(alpha).setStroke()
+        path.stroke()
+    }
+
     private func drawBrush(points: [CGPoint], alpha: CGFloat) {
         guard let first = points.first, points.count >= 2 else {
             return
@@ -630,7 +706,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
     private func drawSelection(for annotation: CaptureAnnotation, imageRect: CGRect) {
         switch annotation.kind {
-        case .arrow:
+        case .arrow, .line:
             let points = annotation.points(in: imageRect)
             guard points.count >= 2 else { return }
             let path = NSBezierPath()
@@ -642,7 +718,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             path.stroke()
             drawHandle(center: points[0])
             drawHandle(center: points[1])
-        case .rectangle, .text, .mosaic, .brush:
+        case .rectangle, .counter, .text, .highlight, .mosaic, .brush:
             let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 18, height: 18)
             let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
             path.lineWidth = 1.2
@@ -795,6 +871,39 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             rect.origin.y = imageRect.maxY - rect.height
         }
         return rect.intersection(imageRect)
+    }
+
+    private func counterDisplayRect(start: CGPoint, current: CGPoint, imageRect: CGRect) -> CGRect {
+        let draggedWidth = abs(current.x - start.x)
+        let draggedHeight = abs(current.y - start.y)
+        let isClick = draggedWidth < 6 && draggedHeight < 6
+        let side = isClick ? CGFloat(32) : max(28, max(draggedWidth, draggedHeight))
+        let origin = isClick
+            ? CGPoint(x: start.x - side / 2, y: start.y - side / 2)
+            : CGPoint(x: min(start.x, current.x), y: min(start.y, current.y))
+
+        var rect = CGRect(origin: origin, size: CGSize(width: side, height: side))
+        if rect.minX < imageRect.minX {
+            rect.origin.x = imageRect.minX
+        }
+        if rect.minY < imageRect.minY {
+            rect.origin.y = imageRect.minY
+        }
+        if rect.maxX > imageRect.maxX {
+            rect.origin.x = imageRect.maxX - rect.width
+        }
+        if rect.maxY > imageRect.maxY {
+            rect.origin.y = imageRect.maxY - rect.height
+        }
+        return rect.intersection(imageRect)
+    }
+
+    private func nextCounterText() -> String {
+        let highestCounter = annotations
+            .filter { $0.kind == .counter }
+            .compactMap { Int($0.text) }
+            .max() ?? 0
+        return "\(highestCounter + 1)"
     }
 
     private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {

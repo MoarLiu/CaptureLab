@@ -247,14 +247,20 @@ private extension CaptureTool {
             return "1"
         case .arrow:
             return "2"
-        case .rectangle:
+        case .line:
             return "3"
-        case .brush:
+        case .rectangle:
             return "4"
-        case .text:
+        case .counter:
             return "5"
-        case .mosaic:
+        case .brush:
             return "6"
+        case .text:
+            return "7"
+        case .highlight:
+            return "8"
+        case .mosaic:
+            return "9"
         }
     }
 }

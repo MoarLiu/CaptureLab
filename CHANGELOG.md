@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 - 2026-07-03
+
+- Added Line annotation tool with editable endpoints.
+- Added Counter annotation tool with auto-incrementing numbered markers.
+- Added Text Highlight annotation tool with translucent yellow highlight blocks.
+- New annotations render in the editor and exported PNG output.
+
+Artifact:
+
+- `CaptureLab-0.3.0-macos-arm64.dmg`
+- SHA-256: `c0ecc7a07ec9cc06aad54d7aaca8e7697805310f1b0362bb268dde785aca2355`
+- `CaptureLab-0.3.0-macos-x86_64.dmg`
+- SHA-256: `b4d46e904c4886fd67e58e0ab2a55ce6c579d922964684197d40723710c43d92`
+
 ## 0.2.0 - 2026-07-03
 
 - Added Cloudflare R2 settings from the menu bar.

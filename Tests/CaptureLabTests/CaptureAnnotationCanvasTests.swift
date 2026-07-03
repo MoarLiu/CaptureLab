@@ -22,6 +22,39 @@ final class CaptureAnnotationCanvasTests: XCTestCase {
         XCTAssertEqual(harness.view.annotations[0].normalizedPoints[1].y, 0.542, accuracy: 0.01)
     }
 
+    func testLineCanBeCreatedAndEndpointDragged() {
+        let harness = CanvasHarness(tool: .line)
+        defer { harness.close() }
+
+        harness.drag(from: CGPoint(x: 160, y: 120), to: CGPoint(x: 360, y: 260))
+
+        XCTAssertEqual(harness.view.annotations.count, 1)
+        XCTAssertEqual(harness.view.annotations[0].kind, .line)
+        XCTAssertEqual(harness.view.annotations[0].normalizedPoints[0].x, 0.125, accuracy: 0.01)
+        XCTAssertEqual(harness.view.annotations[0].normalizedPoints[1].x, 0.438, accuracy: 0.01)
+
+        harness.drag(from: CGPoint(x: 360, y: 260), to: CGPoint(x: 440, y: 320))
+
+        XCTAssertEqual(harness.view.annotations.count, 1)
+        XCTAssertEqual(harness.view.annotations[0].normalizedPoints[1].x, 0.563, accuracy: 0.01)
+        XCTAssertEqual(harness.view.annotations[0].normalizedPoints[1].y, 0.542, accuracy: 0.01)
+    }
+
+    func testCounterCanBeCreatedFromClicksAndAutoIncrements() {
+        let harness = CanvasHarness(tool: .counter)
+        defer { harness.close() }
+
+        harness.click(at: CGPoint(x: 280, y: 200))
+        harness.click(at: CGPoint(x: 320, y: 220))
+
+        XCTAssertEqual(harness.view.annotations.count, 2)
+        XCTAssertEqual(harness.view.annotations[0].kind, .counter)
+        XCTAssertEqual(harness.view.annotations[0].text, "1")
+        XCTAssertEqual(harness.view.annotations[1].kind, .counter)
+        XCTAssertEqual(harness.view.annotations[1].text, "2")
+        XCTAssertEqual(harness.view.annotations[0].normalizedRect.width, 0.05, accuracy: 0.01)
+    }
+
     func testMosaicCanBeCreatedAndResizedWithHandleDrag() {
         let harness = CanvasHarness(tool: .mosaic)
         defer { harness.close() }
@@ -30,6 +63,23 @@ final class CaptureAnnotationCanvasTests: XCTestCase {
 
         XCTAssertEqual(harness.view.annotations.count, 1)
         XCTAssertEqual(harness.view.annotations[0].kind, .mosaic)
+        XCTAssertEqual(harness.view.annotations[0].normalizedRect.width, 0.313, accuracy: 0.01)
+
+        harness.drag(from: CGPoint(x: 360, y: 260), to: CGPoint(x: 440, y: 320))
+
+        XCTAssertEqual(harness.view.annotations.count, 1)
+        XCTAssertEqual(harness.view.annotations[0].normalizedRect.width, 0.438, accuracy: 0.01)
+        XCTAssertEqual(harness.view.annotations[0].normalizedRect.height, 0.417, accuracy: 0.01)
+    }
+
+    func testTextHighlightCanBeCreatedAndResizedWithHandleDrag() {
+        let harness = CanvasHarness(tool: .highlight)
+        defer { harness.close() }
+
+        harness.drag(from: CGPoint(x: 160, y: 120), to: CGPoint(x: 360, y: 260))
+
+        XCTAssertEqual(harness.view.annotations.count, 1)
+        XCTAssertEqual(harness.view.annotations[0].kind, .highlight)
         XCTAssertEqual(harness.view.annotations[0].normalizedRect.width, 0.313, accuracy: 0.01)
 
         harness.drag(from: CGPoint(x: 360, y: 260), to: CGPoint(x: 440, y: 320))

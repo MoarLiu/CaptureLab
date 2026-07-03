@@ -4,9 +4,12 @@ import Foundation
 enum CaptureTool: String, CaseIterable, Identifiable {
     case select
     case arrow
+    case line
     case rectangle
+    case counter
     case brush
     case text
+    case highlight
     case mosaic
 
     var id: String { rawValue }
@@ -17,12 +20,18 @@ enum CaptureTool: String, CaseIterable, Identifiable {
             return L10n.toolSelect
         case .arrow:
             return L10n.toolArrow
+        case .line:
+            return L10n.toolLine
         case .rectangle:
             return L10n.toolBox
+        case .counter:
+            return L10n.toolCounter
         case .brush:
             return L10n.toolBrush
         case .text:
             return L10n.toolText
+        case .highlight:
+            return L10n.toolTextHighlight
         case .mosaic:
             return L10n.toolMosaic
         }
@@ -34,12 +43,18 @@ enum CaptureTool: String, CaseIterable, Identifiable {
             return "cursorarrow"
         case .arrow:
             return "arrow.up.right"
+        case .line:
+            return "line.diagonal"
         case .rectangle:
             return "rectangle"
+        case .counter:
+            return "number.circle"
         case .brush:
             return "pencil.tip"
         case .text:
             return "character.cursor.ibeam"
+        case .highlight:
+            return "highlighter"
         case .mosaic:
             return "square.grid.3x3.fill"
         }
@@ -51,12 +66,18 @@ enum CaptureTool: String, CaseIterable, Identifiable {
             return nil
         case .arrow:
             return .arrow
+        case .line:
+            return .line
         case .rectangle:
             return .rectangle
+        case .counter:
+            return .counter
         case .brush:
             return .brush
         case .text:
             return .text
+        case .highlight:
+            return .highlight
         case .mosaic:
             return .mosaic
         }
@@ -80,21 +101,30 @@ struct CaptureAnnotationPoint: Hashable {
 struct CaptureAnnotation: Identifiable, Hashable {
     enum Kind: String, Hashable {
         case arrow
+        case line
         case rectangle
+        case counter
         case brush
         case text
+        case highlight
         case mosaic
 
         var displayTitle: String {
             switch self {
             case .arrow:
                 return L10n.toolArrow
+            case .line:
+                return L10n.toolLine
             case .rectangle:
                 return L10n.toolBox
+            case .counter:
+                return L10n.toolCounter
             case .brush:
                 return L10n.toolBrush
             case .text:
                 return L10n.toolText
+            case .highlight:
+                return L10n.toolTextHighlight
             case .mosaic:
                 return L10n.toolMosaic
             }
@@ -130,6 +160,20 @@ struct CaptureAnnotation: Identifiable, Hashable {
         )
         return CaptureAnnotation(
             kind: .arrow,
+            normalizedRect: rect,
+            normalizedPoints: [CaptureAnnotationPoint(start), CaptureAnnotationPoint(end)]
+        )
+    }
+
+    static func line(start: CGPoint, end: CGPoint) -> CaptureAnnotation {
+        let rect = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+        return CaptureAnnotation(
+            kind: .line,
             normalizedRect: rect,
             normalizedPoints: [CaptureAnnotationPoint(start), CaptureAnnotationPoint(end)]
         )
@@ -219,12 +263,12 @@ struct CaptureAnnotation: Identifiable, Hashable {
         let adjustedDY = min(max(dy, -bounds.minY), 1 - bounds.maxY)
 
         switch kind {
-        case .arrow, .brush:
+        case .arrow, .line, .brush:
             let points = normalizedPoints.map {
                 CGPoint(x: $0.x + adjustedDX, y: $0.y + adjustedDY).clampedToUnit()
             }
             return withNormalizedPoints(points)
-        case .rectangle, .text, .mosaic:
+        case .rectangle, .counter, .text, .highlight, .mosaic:
             return withNormalizedRect(normalizedRect.offsetBy(dx: adjustedDX, dy: adjustedDY))
         }
     }
@@ -232,7 +276,7 @@ struct CaptureAnnotation: Identifiable, Hashable {
     func scaledToNormalizedRect(_ targetRect: CGRect) -> CaptureAnnotation {
         let target = targetRect.clampedToUnit()
         switch kind {
-        case .arrow, .brush:
+        case .arrow, .line, .brush:
             let points = normalizedPoints.map(\.cgPoint)
             let bounds = CGRect.bounding(points)
             guard !points.isEmpty else {
@@ -248,17 +292,17 @@ struct CaptureAnnotation: Identifiable, Hashable {
                 .clampedToUnit()
             }
             return withNormalizedPoints(scaled)
-        case .rectangle, .text, .mosaic:
+        case .rectangle, .counter, .text, .highlight, .mosaic:
             return withNormalizedRect(target)
         }
     }
 
     var normalizedBounds: CGRect {
         switch kind {
-        case .arrow, .brush:
+        case .arrow, .line, .brush:
             let points = normalizedPoints.map(\.cgPoint)
             return points.isEmpty ? normalizedRect : CGRect.bounding(points)
-        case .rectangle, .text, .mosaic:
+        case .rectangle, .counter, .text, .highlight, .mosaic:
             return normalizedRect
         }
     }

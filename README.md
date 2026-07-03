@@ -6,7 +6,7 @@ The current MVP keeps the scope narrow:
 
 - interactive region capture through the system capture picker
 - image preview
-- simple arrow, rectangle, brush, text, and mosaic markup
+- arrow, line, rectangle, counter, brush, text, text highlight, and mosaic markup
 - copy/save rendered PNG output
 - optional local Vision OCR tool
 - editable OCR text with copy support when OCR is run manually

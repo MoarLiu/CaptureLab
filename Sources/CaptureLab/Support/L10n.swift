@@ -119,9 +119,12 @@ enum L10n {
 
     static var toolSelect: String { text(en: "Select", zh: "选择") }
     static var toolArrow: String { text(en: "Arrow", zh: "箭头") }
+    static var toolLine: String { text(en: "Line", zh: "直线") }
     static var toolBox: String { text(en: "Box", zh: "矩形") }
+    static var toolCounter: String { text(en: "Counter", zh: "计数器") }
     static var toolBrush: String { text(en: "Brush", zh: "画笔") }
     static var toolText: String { text(en: "Text", zh: "文字") }
+    static var toolTextHighlight: String { text(en: "Text Highlight", zh: "文字高亮") }
     static var toolMosaic: String { text(en: "Mosaic", zh: "马赛克") }
     static var defaultAnnotationText: String { text(en: "Text", zh: "文字") }
 
