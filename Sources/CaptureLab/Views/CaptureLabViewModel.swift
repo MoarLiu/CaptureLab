@@ -17,21 +17,33 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var statusMessage = L10n.ready
     @Published private(set) var isCheckingForUpdates = false
     @Published private(set) var isUploading = false
+    @Published private(set) var historyItems: [CaptureHistoryItem]
 
     private let captureService = ScreenCaptureService()
     private let textRecognitionService = TextRecognitionService()
     private let updateCheckService = UpdateCheckService()
     private let r2SettingsStore: CloudflareR2SettingsStore
+    private let historyStore: CaptureHistoryStore
     private var annotationUndoStack: [[CaptureAnnotation]] = []
     private var isApplyingAnnotationHistory = false
     private let maxUndoDepth = 60
 
     init() {
         self.r2SettingsStore = CloudflareR2SettingsStore()
+        self.historyStore = CaptureHistoryStore()
+        self.historyItems = historyStore.items
     }
 
     init(r2SettingsStore: CloudflareR2SettingsStore) {
         self.r2SettingsStore = r2SettingsStore
+        self.historyStore = CaptureHistoryStore()
+        self.historyItems = historyStore.items
+    }
+
+    init(r2SettingsStore: CloudflareR2SettingsStore, historyStore: CaptureHistoryStore) {
+        self.r2SettingsStore = r2SettingsStore
+        self.historyStore = historyStore
+        self.historyItems = historyStore.items
     }
 
     var hasImage: Bool {
@@ -73,22 +85,37 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func captureRegion() {
+        capture(.region)
+    }
+
+    func capture(_ mode: CaptureMode, onSuccess: (() -> Void)? = nil) {
         guard !isCapturing else { return }
         isCapturing = true
-        statusMessage = L10n.selectRegionPrompt
+        statusMessage = mode.promptTitle
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try self.captureService.captureInteractiveRegionFile() }
-            DispatchQueue.main.async {
-                self.isCapturing = false
-                switch result {
-                case .success(let url):
-                    if self.loadImage(from: url, sourceURL: nil, status: L10n.capturedRegion) {
-                        self.copyRenderedImage(successStatus: L10n.capturedRegionAndCopied)
+        let captureService = self.captureService
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try captureService.captureFile(mode: mode) }
+            }.value
+
+            guard let self else {
+                return
+            }
+
+            self.isCapturing = false
+            switch result {
+            case .success(let url):
+                if self.loadImage(from: url, sourceURL: nil, status: mode.completedTitle) {
+                    let historyError = self.recordCurrentCaptureInHistory()
+                    let didCopy = self.copyRenderedImage(successStatus: mode.completedAndCopiedTitle)
+                    if didCopy, let historyError {
+                        self.statusMessage = L10n.captureCopiedButHistorySaveFailed(historyError)
                     }
-                case .failure(let error):
-                    self.statusMessage = error.localizedDescription
+                    onSuccess?()
                 }
+            case .failure(let error):
+                self.statusMessage = error.localizedDescription
             }
         }
     }
@@ -162,6 +189,78 @@ final class CaptureLabViewModel: ObservableObject {
             NSSound.beep()
             return
         }
+        guard let data = document.image.captureLabPNGData(annotations: annotations) else {
+            presentUploadFailure(CloudflareR2Error.imageExportFailed)
+            return
+        }
+
+        uploadPNGData(data, fileName: defaultUploadName(for: document), onSuccess: onSuccess)
+    }
+
+    func openHistoryItem(_ item: CaptureHistoryItem) {
+        let url = historyStore.url(for: item)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            statusMessage = CaptureHistoryError.imageNotFound.localizedDescription
+            NSSound.beep()
+            return
+        }
+        loadImage(from: url, sourceURL: url, status: L10n.historyCaptureOpened)
+    }
+
+    func copyHistoryItem(_ item: CaptureHistoryItem) {
+        let url = historyStore.url(for: item)
+        guard let image = NSImage(contentsOf: url), image.isValid else {
+            statusMessage = CaptureHistoryError.imageNotFound.localizedDescription
+            NSSound.beep()
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        let didCopy = NSPasteboard.general.writeObjects([image])
+        statusMessage = didCopy ? L10n.imageCopied : L10n.imageCopyFailed
+        if !didCopy {
+            NSSound.beep()
+        }
+    }
+
+    func saveHistoryItem(_ item: CaptureHistoryItem) {
+        let panel = NSSavePanel()
+        panel.title = L10n.saveCaptureTitle
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = item.fileName
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            let data = try historyStore.data(for: item)
+            try data.write(to: url, options: .atomic)
+            statusMessage = L10n.saved(url.lastPathComponent)
+        } catch {
+            statusMessage = error.localizedDescription
+            NSSound.beep()
+        }
+    }
+
+    func uploadHistoryItem(_ item: CaptureHistoryItem, onSuccess: ((String) -> Void)? = nil) {
+        do {
+            let data = try historyStore.data(for: item)
+            uploadPNGData(data, fileName: item.fileName, onSuccess: onSuccess)
+        } catch {
+            presentUploadFailure(error)
+        }
+    }
+
+    private func uploadPNGData(_ data: Data, fileName: String, onSuccess: ((String) -> Void)? = nil) {
+        guard !isUploading else {
+            return
+        }
+        guard !data.isEmpty else {
+            presentUploadFailure(CaptureHistoryError.imageDataUnavailable)
+            return
+        }
+
         let settings: CloudflareR2Settings
         do {
             settings = try r2SettingsStore.requiredSettings()
@@ -169,15 +268,10 @@ final class CaptureLabViewModel: ObservableObject {
             presentUploadFailure(error)
             return
         }
-        guard let data = document.image.captureLabPNGData(annotations: annotations) else {
-            presentUploadFailure(CloudflareR2Error.imageExportFailed)
-            return
-        }
 
         isUploading = true
         statusMessage = L10n.uploading
 
-        let fileName = defaultUploadName(for: document)
         let service = CloudflareR2UploadService()
         Task {
             do {
@@ -320,6 +414,26 @@ final class CaptureLabViewModel: ObservableObject {
         return "capture-\(Self.uploadFileTimestampFormatter.string(from: document.createdAt)).png"
     }
 
+    private func recordCurrentCaptureInHistory() -> String? {
+        guard let document,
+              let data = document.image.captureLabPNGData()
+        else {
+            return CaptureHistoryError.imageDataUnavailable.localizedDescription
+        }
+
+        do {
+            _ = try historyStore.record(
+                data: data,
+                pixelSize: document.pixelSize,
+                createdAt: document.createdAt
+            )
+            historyItems = historyStore.items
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     private func trackAnnotationChange(from oldValue: [CaptureAnnotation], to newValue: [CaptureAnnotation]) {
         guard !isApplyingAnnotationHistory,
               oldValue != newValue
@@ -341,7 +455,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.3.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

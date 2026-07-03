@@ -19,6 +19,12 @@ enum L10n {
     static var shortcutSettingsTitle: String { text(en: "Shortcut Settings", zh: "快捷键配置") }
     static var showCaptureLab: String { text(en: "Show CaptureLab", zh: "显示 CaptureLab") }
     static var captureRegion: String { text(en: "Capture Region", zh: "区域截图") }
+    static var captureFullScreen: String { text(en: "Capture Full Screen", zh: "全屏截图") }
+    static var captureWindow: String { text(en: "Capture Window", zh: "窗口截图") }
+    static var captureDelayedMenu: String { text(en: "Delayed Capture", zh: "延迟截图") }
+    static func captureDelayedRegion(_ seconds: Int) -> String {
+        text(en: "Capture Region in \(seconds)s", zh: "\(seconds) 秒后区域截图")
+    }
     static var openImage: String { text(en: "Open Image...", zh: "打开图片...") }
     static var saveEditedImage: String { text(en: "Save Edited Image...", zh: "保存编辑后图片...") }
     static var copyEditedImage: String { text(en: "Copy Edited Image", zh: "复制编辑后图片") }
@@ -34,14 +40,25 @@ enum L10n {
     static var quitCaptureLab: String { text(en: "Quit CaptureLab", zh: "退出 CaptureLab") }
     static var shortcutConfiguration: String { text(en: "Shortcut Settings...", zh: "快捷键配置...") }
     static var screenshotShortcut: String { text(en: "Screenshot shortcut", zh: "截图快捷键") }
+    static var globalShortcutStatus: String { text(en: "Global shortcut", zh: "全局快捷键") }
     static func shortcutSummary(_ shortcut: String) -> String {
         text(en: "Screenshot shortcut: \(shortcut)", zh: "截图快捷键: \(shortcut)")
+    }
+    static func globalShortcutUnsupported(_ shortcut: String) -> String {
+        text(en: "\(shortcut) is not supported as a global shortcut.", zh: "\(shortcut) 不支持作为全局快捷键。")
+    }
+    static func globalShortcutRegistrationFailed(_ shortcut: String) -> String {
+        text(en: "Could not register \(shortcut). It may already be used by another app.", zh: "无法注册 \(shortcut)，可能已被其它应用占用。")
+    }
+    static var globalShortcutHandlerInstallFailed: String {
+        text(en: "Could not install the global shortcut handler.", zh: "无法安装全局快捷键处理器。")
     }
 
     static var saveAs: String { text(en: "Save As", zh: "保存为") }
     static let done = "Done"
     static var copiedToClipboard: String { text(en: "Copied to clipboard", zh: "已复制到粘贴板") }
     static var zoom: String { text(en: "Zoom", zh: "缩放") }
+    static var zoomFit: String { text(en: "Fit", zh: "适应") }
     static var copyImage: String { text(en: "Copy Image", zh: "复制图片") }
     static var savePNG: String { text(en: "Save PNG", zh: "保存 PNG") }
     static var upload: String { text(en: "Upload", zh: "上传") }
@@ -49,17 +66,24 @@ enum L10n {
     static var uploading: String { text(en: "Uploading...", zh: "正在上传...") }
     static var uploadedURLCopied: String { text(en: "Uploaded URL copied", zh: "已上传，URL 已复制") }
     static var uploadFailedTitle: String { text(en: "Upload Failed", zh: "上传失败") }
-    static var inspector: String { text(en: "Inspector", zh: "检查器") }
-    static var info: String { text(en: "Info", zh: "信息") }
-    static var lines: String { text(en: "lines", zh: "行") }
-    static var chars: String { text(en: "chars", zh: "字符") }
-    static var noText: String { text(en: "No text", zh: "没有文本") }
-    static var name: String { text(en: "Name", zh: "名称") }
-    static var size: String { text(en: "Size", zh: "大小") }
-    static var markup: String { text(en: "Markup", zh: "标注") }
-    static var output: String { text(en: "Output", zh: "输出") }
-    static var cleanup: String { text(en: "Cleanup", zh: "清理") }
-    static var clearCapture: String { text(en: "Clear Capture", zh: "清空截图") }
+    static var recentCaptures: String { text(en: "Recent Captures", zh: "最近截图") }
+    static var noRecentCaptures: String { text(en: "No recent captures", zh: "没有最近截图") }
+    static var openRecentCapture: String { text(en: "Open", zh: "打开") }
+    static var copyRecentCapture: String { text(en: "Copy", zh: "复制") }
+    static var saveRecentCapture: String { text(en: "Save As...", zh: "另存为...") }
+    static var uploadRecentCapture: String { text(en: "Upload", zh: "上传") }
+    static var historyImageDataUnavailable: String { text(en: "Could not prepare the capture history image.", zh: "无法准备历史截图图片。") }
+    static var historyImageNotFound: String { text(en: "The capture history image was not found.", zh: "找不到这张历史截图。") }
+    static func historyMetadataLoadFailed(_ message: String) -> String {
+        text(en: "Could not load capture history metadata: \(message)", zh: "无法加载截图历史元数据：\(message)")
+    }
+    static func captureCopiedButHistorySaveFailed(_ message: String) -> String {
+        text(
+            en: "Captured and copied, but history could not be saved: \(message)",
+            zh: "已截图并复制，但无法保存到最近截图：\(message)"
+        )
+    }
+    static var historyCaptureOpened: String { text(en: "Opened recent capture.", zh: "已打开最近截图。") }
     static var noOCRText: String { text(en: "No OCR text", zh: "没有 OCR 文本") }
     static var ocr: String { text(en: "OCR", zh: "OCR") }
     static var run: String { text(en: "Run", zh: "运行") }
@@ -71,7 +95,7 @@ enum L10n {
     static var open: String { text(en: "Open", zh: "打开") }
 
     static var shortcutSettingsSubtitle: String {
-        text(en: "Set the in-app region capture shortcut", zh: "设置应用内区域截图快捷键")
+        text(en: "Set the global screenshot shortcut", zh: "设置全局截图快捷键")
     }
     static var shortcutHelp: String {
         text(en: "Press a shortcut containing ⌘, ⌃, or ⌥. Esc cancels.", zh: "请按下包含 ⌘、⌃ 或 ⌥ 的组合键。Esc 取消。")
@@ -90,8 +114,29 @@ enum L10n {
     static var selectRegionPrompt: String {
         text(en: "Select a region or press Esc to cancel.", zh: "选择区域，或按 Esc 取消。")
     }
+    static var selectWindowPrompt: String {
+        text(en: "Select a window or press Esc to cancel.", zh: "选择窗口，或按 Esc 取消。")
+    }
+    static var capturingFullScreen: String { text(en: "Capturing full screen...", zh: "正在截取全屏...") }
+    static func selectDelayedRegionPrompt(_ seconds: Int) -> String {
+        text(en: "Select a region. Capture starts after \(seconds) seconds.", zh: "选择区域，\(seconds) 秒后截图。")
+    }
     static var capturedRegion: String { text(en: "Captured region.", zh: "已截图。") }
     static var capturedRegionAndCopied: String { text(en: "Captured region and copied.", zh: "已截图并复制到粘贴板。") }
+    static var capturedFullScreen: String { text(en: "Captured full screen.", zh: "已截取全屏。") }
+    static var capturedFullScreenAndCopied: String {
+        text(en: "Captured full screen and copied.", zh: "已截取全屏并复制到粘贴板。")
+    }
+    static var capturedWindow: String { text(en: "Captured window.", zh: "已截取窗口。") }
+    static var capturedWindowAndCopied: String {
+        text(en: "Captured window and copied.", zh: "已截取窗口并复制到粘贴板。")
+    }
+    static func capturedDelayedRegion(_ seconds: Int) -> String {
+        text(en: "Captured delayed region after \(seconds)s.", zh: "已完成 \(seconds) 秒延迟截图。")
+    }
+    static func capturedDelayedRegionAndCopied(_ seconds: Int) -> String {
+        text(en: "Captured delayed region after \(seconds)s and copied.", zh: "已完成 \(seconds) 秒延迟截图并复制到粘贴板。")
+    }
     static func opened(_ name: String) -> String { text(en: "Opened \(name).", zh: "已打开 \(name)。") }
     static var imageCopied: String { text(en: "Image copied.", zh: "图片已复制。") }
     static var imageCopyFailed: String { text(en: "Could not copy image.", zh: "无法复制图片。") }

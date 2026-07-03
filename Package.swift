@@ -15,6 +15,7 @@ let package = Package(
             path: "Sources/CaptureLab",
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("Carbon"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CryptoKit"),
                 .linkedFramework("SwiftUI"),

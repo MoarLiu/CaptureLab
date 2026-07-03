@@ -3,12 +3,14 @@ import SwiftUI
 
 struct ShortcutSettingsView: View {
     @ObservedObject var shortcutStore: CaptureShortcutStore
+    let onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var draftShortcut: CaptureKeyboardShortcut
     @State private var window: NSWindow?
 
-    init(shortcutStore: CaptureShortcutStore) {
+    init(shortcutStore: CaptureShortcutStore, onSave: @escaping () -> Void = {}) {
         self.shortcutStore = shortcutStore
+        self.onSave = onSave
         _draftShortcut = State(initialValue: shortcutStore.captureShortcut)
     }
 
@@ -54,6 +56,7 @@ struct ShortcutSettingsView: View {
 
                 Button(L10n.save) {
                     shortcutStore.saveCaptureShortcut(draftShortcut)
+                    onSave()
                     close()
                 }
                 .keyboardShortcut(.defaultAction)

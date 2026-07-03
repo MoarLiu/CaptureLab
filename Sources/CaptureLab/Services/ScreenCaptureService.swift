@@ -24,15 +24,41 @@ enum CaptureLabError: LocalizedError {
 }
 
 struct ScreenCaptureService {
+    func captureFile(mode: CaptureMode) throws -> URL {
+        let url = try temporaryCaptureURL()
+        try runScreencapture(arguments: arguments(for: mode, outputURL: url), outputURL: url)
+        return url
+    }
+
     func captureInteractiveRegionFile() throws -> URL {
+        try captureFile(mode: .region)
+    }
+
+    func arguments(for mode: CaptureMode, outputURL url: URL) -> [String] {
+        switch mode {
+        case .region:
+            return ["-i", "-x", url.path]
+        case .fullScreen:
+            return ["-x", url.path]
+        case .window:
+            return ["-i", "-w", "-x", url.path]
+        case .delayedRegion(let seconds):
+            return ["-T", "\(max(0, seconds))", "-i", "-x", url.path]
+        }
+    }
+
+    private func temporaryCaptureURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CaptureLab", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let url = directory.appendingPathComponent("capture-\(UUID().uuidString).png")
+        return directory.appendingPathComponent("capture-\(UUID().uuidString).png")
+    }
+
+    private func runScreencapture(arguments: [String], outputURL url: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = ["-i", "-x", url.path]
+        process.arguments = arguments
 
         do {
             try process.run()
@@ -55,6 +81,5 @@ struct ScreenCaptureService {
             throw CaptureLabError.captureCancelled
         }
 
-        return url
     }
 }

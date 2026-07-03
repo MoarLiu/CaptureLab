@@ -5,6 +5,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
     let document: CaptureDocument
     @Binding var annotations: [CaptureAnnotation]
     @Binding var selectedTool: CaptureTool
+    @Binding var zoomLevel: CaptureZoomLevel
 
     func makeCoordinator() -> Coordinator {
         Coordinator(annotations: $annotations)
@@ -15,6 +16,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         view.setDocument(document)
         view.annotations = annotations
         view.selectedTool = selectedTool
+        view.zoomLevel = zoomLevel
         view.onAnnotationsChanged = { [coordinator = context.coordinator] updated in
             coordinator.annotations.wrappedValue = updated
         }
@@ -25,6 +27,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         context.coordinator.annotations = $annotations
         nsView.setDocument(document)
         nsView.annotations = annotations
+        nsView.zoomLevel = zoomLevel
         if nsView.selectedTool != selectedTool {
             nsView.selectedTool = selectedTool
         }
@@ -57,6 +60,16 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             }
             interaction = nil
             needsDisplay = true
+        }
+    }
+
+    var zoomLevel: CaptureZoomLevel = .fit {
+        didSet {
+            if oldValue != zoomLevel {
+                commitActiveTextEdit()
+                interaction = nil
+                needsDisplay = true
+            }
         }
     }
 
@@ -261,11 +274,27 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
 
     private func imageDisplayRect(for imageSize: CGSize) -> CGRect {
-        CaptureGeometry.aspectFitRect(
+        let contentOrigin = CGPoint(x: 80, y: 60)
+        let contentSize = CGSize(width: max(bounds.width - 160, 1), height: max(bounds.height - 120, 1))
+
+        if let scale = zoomLevel.scale {
+            let scaledSize = CGSize(
+                width: max(imageSize.width * scale, 1),
+                height: max(imageSize.height * scale, 1)
+            )
+            return CGRect(
+                x: contentOrigin.x + (contentSize.width - scaledSize.width) / 2,
+                y: contentOrigin.y + (contentSize.height - scaledSize.height) / 2,
+                width: scaledSize.width,
+                height: scaledSize.height
+            )
+        }
+
+        return CaptureGeometry.aspectFitRect(
             imageSize: imageSize,
-            in: CGSize(width: max(bounds.width - 160, 1), height: max(bounds.height - 120, 1))
+            in: contentSize
         )
-        .offsetBy(dx: 80, dy: 60)
+        .offsetBy(dx: contentOrigin.x, dy: contentOrigin.y)
     }
 
     private func canEdit(_ annotation: CaptureAnnotation) -> Bool {
@@ -749,56 +778,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             return nil
         }
 
-        let pixelSize = CGSize(width: source.width, height: source.height)
-        let crop = CGRect(
-            x: annotation.normalizedRect.minX * pixelSize.width,
-            y: annotation.normalizedRect.minY * pixelSize.height,
-            width: annotation.normalizedRect.width * pixelSize.width,
-            height: annotation.normalizedRect.height * pixelSize.height
-        )
-        .integral
-
-        guard let cropped = source.cropping(to: crop) else {
-            return nil
-        }
-
-        let block = 6
-        let tinyWidth = max(1, cropped.width / block)
-        let tinyHeight = max(1, cropped.height / block)
-        let colorSpace = cropped.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-
-        guard let smallContext = CGContext(
-            data: nil,
-            width: tinyWidth,
-            height: tinyHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        ) else {
-            return nil
-        }
-        smallContext.interpolationQuality = .low
-        smallContext.draw(cropped, in: CGRect(x: 0, y: 0, width: tinyWidth, height: tinyHeight))
-        guard let small = smallContext.makeImage() else {
-            return nil
-        }
-
-        guard let outputContext = CGContext(
-            data: nil,
-            width: cropped.width,
-            height: cropped.height,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        ) else {
-            return nil
-        }
-        outputContext.interpolationQuality = .none
-        outputContext.draw(small, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
-        guard let output = outputContext.makeImage() else {
+        guard let output = CapturePixelation.pixelatedImage(from: source, normalizedRect: annotation.normalizedRect) else {
             return nil
         }
 

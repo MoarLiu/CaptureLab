@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0 - 2026-07-04
+
+- Added a global screenshot shortcut that works while CaptureLab is in the background.
+- Added full screen, window, and delayed region capture modes.
+- Added recent capture history with open, copy, save as, and upload actions.
+- Implemented real Fit, 50%, 100%, and 200% editor zoom controls with scrollable fixed-zoom canvas access.
+- Hardened mosaic sampling with shared pixelation logic and top-region regression coverage.
+- Removed unused inspector UI code and replaced the fake zoom menu.
+- Stabilized launch behavior so the editor window only appears when explicitly opened or after a successful capture.
+- Improved capture status messages and history metadata recovery.
+
+Artifact:
+
+- `CaptureLab-0.4.0-macos-arm64.dmg`
+- SHA-256: `bf3a6e5931f2263660054b2633bb3e14f4c0f9019ade0b92ff8345792c8f2bd1`
+- `CaptureLab-0.4.0-macos-x86_64.dmg`
+- SHA-256: `c6176214aa14d76e79a18a6993ef0f819dc436478ce063130a65f0142decf4a6`
+
+Known release note:
+
+- The app is ad-hoc signed and not notarized in this release.
+
 ## 0.3.0 - 2026-07-03
 
 - Added Line annotation tool with editable endpoints.

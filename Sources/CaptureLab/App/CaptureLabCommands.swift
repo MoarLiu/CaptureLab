@@ -23,13 +23,35 @@ struct CaptureLabCommands: Commands {
 
         CommandGroup(replacing: .newItem) {
             Button(L10n.captureRegion) {
-                model.captureRegion()
+                model.capture(.region, onSuccess: showMainWindow)
             }
             .keyboardShortcut(
                 shortcutStore.captureShortcut.keyEquivalent,
                 modifiers: shortcutStore.captureShortcut.modifiers
             )
             .disabled(model.isCapturing)
+
+            Button(L10n.captureFullScreen) {
+                model.capture(.fullScreen, onSuccess: showMainWindow)
+            }
+            .disabled(model.isCapturing)
+
+            Button(L10n.captureWindow) {
+                model.capture(.window, onSuccess: showMainWindow)
+            }
+            .disabled(model.isCapturing)
+
+            Menu(L10n.captureDelayedMenu) {
+                Button(L10n.captureDelayedRegion(3)) {
+                    model.capture(.delayedRegion(seconds: 3), onSuccess: showMainWindow)
+                }
+                .disabled(model.isCapturing)
+
+                Button(L10n.captureDelayedRegion(5)) {
+                    model.capture(.delayedRegion(seconds: 5), onSuccess: showMainWindow)
+                }
+                .disabled(model.isCapturing)
+            }
 
             Button(L10n.openImage) {
                 model.openImage()
@@ -81,9 +103,33 @@ struct CaptureLabCommands: Commands {
 
         CommandMenu(L10n.captureMenu) {
             Button(L10n.captureRegion) {
-                model.captureRegion()
+                model.capture(.region, onSuccess: showMainWindow)
             }
             .disabled(model.isCapturing)
+
+            Button(L10n.captureFullScreen) {
+                model.capture(.fullScreen, onSuccess: showMainWindow)
+            }
+            .disabled(model.isCapturing)
+
+            Button(L10n.captureWindow) {
+                model.capture(.window, onSuccess: showMainWindow)
+            }
+            .disabled(model.isCapturing)
+
+            Menu(L10n.captureDelayedMenu) {
+                Button(L10n.captureDelayedRegion(3)) {
+                    model.capture(.delayedRegion(seconds: 3), onSuccess: showMainWindow)
+                }
+                .disabled(model.isCapturing)
+
+                Button(L10n.captureDelayedRegion(5)) {
+                    model.capture(.delayedRegion(seconds: 5), onSuccess: showMainWindow)
+                }
+                .disabled(model.isCapturing)
+            }
+
+            Divider()
 
             Button(L10n.openImage) {
                 model.openImage()
@@ -144,6 +190,7 @@ struct CaptureLabCommands: Commands {
 struct CaptureLabMenuBarView: View {
     @ObservedObject var model: CaptureLabViewModel
     @ObservedObject var shortcutStore: CaptureShortcutStore
+    @ObservedObject var globalHotKeyController: GlobalHotKeyController
     let showMainWindow: () -> Void
     let showShortcutSettings: () -> Void
     let showR2Settings: () -> Void
@@ -154,10 +201,31 @@ struct CaptureLabMenuBarView: View {
         Divider()
 
         Button(L10n.captureRegion) {
-            showMainWindow()
-            model.captureRegion()
+            model.capture(.region, onSuccess: showMainWindow)
         }
         .disabled(model.isCapturing)
+
+        Button(L10n.captureFullScreen) {
+            model.capture(.fullScreen, onSuccess: showMainWindow)
+        }
+        .disabled(model.isCapturing)
+
+        Button(L10n.captureWindow) {
+            model.capture(.window, onSuccess: showMainWindow)
+        }
+        .disabled(model.isCapturing)
+
+        Menu(L10n.captureDelayedMenu) {
+            Button(L10n.captureDelayedRegion(3)) {
+                model.capture(.delayedRegion(seconds: 3), onSuccess: showMainWindow)
+            }
+            .disabled(model.isCapturing)
+
+            Button(L10n.captureDelayedRegion(5)) {
+                model.capture(.delayedRegion(seconds: 5), onSuccess: showMainWindow)
+            }
+            .disabled(model.isCapturing)
+        }
 
         Button(L10n.shortcutConfiguration) {
             showShortcutSettings()
@@ -171,11 +239,45 @@ struct CaptureLabMenuBarView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+        if let registrationError = globalHotKeyController.registrationError {
+            Text(registrationError)
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+
         Button(L10n.openImage) {
             showMainWindow()
             model.openImage()
         }
         .disabled(model.isCapturing)
+
+        Menu(L10n.recentCaptures) {
+            if model.historyItems.isEmpty {
+                Text(L10n.noRecentCaptures)
+            } else {
+                ForEach(Array(model.historyItems.prefix(8))) { item in
+                    Menu(item.displayTitle) {
+                        Button(L10n.openRecentCapture) {
+                            showMainWindow()
+                            model.openHistoryItem(item)
+                        }
+
+                        Button(L10n.copyRecentCapture) {
+                            model.copyHistoryItem(item)
+                        }
+
+                        Button(L10n.saveRecentCapture) {
+                            model.saveHistoryItem(item)
+                        }
+
+                        Button(L10n.uploadRecentCapture) {
+                            model.uploadHistoryItem(item)
+                        }
+                        .disabled(model.isUploading)
+                    }
+                }
+            }
+        }
 
         Button(model.isCheckingForUpdates ? L10n.checkingForUpdates : L10n.checkForUpdates) {
             model.checkForUpdates()

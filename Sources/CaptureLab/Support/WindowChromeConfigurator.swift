@@ -29,6 +29,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         window.backgroundColor = .windowBackgroundColor
         window.minSize = NSSize(width: 1_080, height: 620)
         alignTrafficLights(in: window)
+        CaptureLabAppDelegate.configureMainWindow(window)
     }
 
     private func alignTrafficLights(in window: NSWindow) {

@@ -4,6 +4,7 @@ struct CaptureCanvasView: View {
     let document: CaptureDocument?
     @Binding var annotations: [CaptureAnnotation]
     @Binding var selectedTool: CaptureTool
+    @Binding var zoomLevel: CaptureZoomLevel
     let captureAction: () -> Void
     let openAction: () -> Void
 
@@ -13,17 +14,34 @@ struct CaptureCanvasView: View {
                 CanvasBackdropView()
 
                 if let document {
-                    CaptureAnnotationCanvasView(
-                        document: document,
-                        annotations: $annotations,
-                        selectedTool: $selectedTool
-                    )
-                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    if zoomLevel.scale == nil {
+                        annotationCanvas(for: document)
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                    } else {
+                        let contentSize = CaptureCanvasLayout.contentSize(
+                            imageSize: document.image.size,
+                            viewportSize: proxy.size,
+                            zoomLevel: zoomLevel
+                        )
+                        ScrollView([.horizontal, .vertical]) {
+                            annotationCanvas(for: document)
+                                .frame(width: contentSize.width, height: contentSize.height)
+                        }
+                    }
                 } else {
                     emptyState
                 }
             }
         }
+    }
+
+    private func annotationCanvas(for document: CaptureDocument) -> some View {
+        CaptureAnnotationCanvasView(
+            document: document,
+            annotations: $annotations,
+            selectedTool: $selectedTool,
+            zoomLevel: $zoomLevel
+        )
     }
 
     private var emptyState: some View {
@@ -58,6 +76,26 @@ struct CaptureCanvasView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+enum CaptureCanvasLayout {
+    static let horizontalPadding: CGFloat = 160
+    static let verticalPadding: CGFloat = 120
+
+    static func contentSize(
+        imageSize: CGSize,
+        viewportSize: CGSize,
+        zoomLevel: CaptureZoomLevel
+    ) -> CGSize {
+        guard let scale = zoomLevel.scale else {
+            return viewportSize
+        }
+
+        return CGSize(
+            width: max(viewportSize.width, imageSize.width * scale + horizontalPadding),
+            height: max(viewportSize.height, imageSize.height * scale + verticalPadding)
+        )
     }
 }
 

@@ -2,14 +2,16 @@
 
 CaptureLab is a small native macOS screenshot and annotation lab app.
 
-The current MVP keeps the scope narrow:
+Current features:
 
-- interactive region capture through the system capture picker
-- image preview
+- global screenshot shortcut from the menu bar app
+- region, full screen, window, and delayed region capture modes
+- recent capture history with open, copy, save as, and Cloudflare R2 upload actions
+- image preview with Fit, 50%, 100%, and 200% zoom
 - arrow, line, rectangle, counter, brush, text, text highlight, and mosaic markup
 - copy/save rendered PNG output
-- optional local Vision OCR tool
-- editable OCR text with copy support when OCR is run manually
+- optional Cloudflare R2 upload for rendered screenshots
+- optional local Vision OCR tool with editable OCR text and copy support
 
 Build and run:
 

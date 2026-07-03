@@ -7,6 +7,7 @@ struct CaptureLabApp: App {
     @StateObject private var model: CaptureLabViewModel
     @StateObject private var shortcutStore = CaptureShortcutStore()
     @StateObject private var r2SettingsStore: CloudflareR2SettingsStore
+    @StateObject private var globalHotKeyController = GlobalHotKeyController()
     @Environment(\.openWindow) private var openWindow
 
     init() {
@@ -27,7 +28,10 @@ struct CaptureLabApp: App {
         .defaultSize(width: 1_080, height: 620)
 
         Window(L10n.shortcutSettingsTitle, id: "shortcut-settings") {
-            ShortcutSettingsView(shortcutStore: shortcutStore)
+            ShortcutSettingsView(
+                shortcutStore: shortcutStore,
+                onSave: configureGlobalHotKey
+            )
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 420, height: 220)
@@ -38,14 +42,18 @@ struct CaptureLabApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 560, height: 440)
 
-        MenuBarExtra(L10n.appName, systemImage: "viewfinder") {
+        MenuBarExtra {
             CaptureLabMenuBarView(
                 model: model,
                 shortcutStore: shortcutStore,
+                globalHotKeyController: globalHotKeyController,
                 showMainWindow: showMainWindow,
                 showShortcutSettings: showShortcutSettings,
                 showR2Settings: showR2Settings
             )
+        } label: {
+            Label(L10n.appName, systemImage: "viewfinder")
+                .onAppear(perform: configureGlobalHotKey)
         }
         .commands {
             CaptureLabCommands(
@@ -58,9 +66,16 @@ struct CaptureLabApp: App {
     }
 
     private func showMainWindow() {
+        CaptureLabAppDelegate.allowNextMainWindowPresentation()
         NSApp.setActivationPolicy(.regular)
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func configureGlobalHotKey() {
+        globalHotKeyController.configure(shortcut: shortcutStore.captureShortcut) {
+            model.capture(.region, onSuccess: showMainWindow)
+        }
     }
 
     private func showShortcutSettings() {
@@ -77,23 +92,29 @@ struct CaptureLabApp: App {
 }
 
 final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
+    static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("CaptureLab.main-window")
+    private static var shouldSuppressNextMainWindow = true
+
+    static func allowNextMainWindowPresentation() {
+        shouldSuppressNextMainWindow = false
+    }
+
+    static func configureMainWindow(_ window: NSWindow) {
+        window.identifier = mainWindowIdentifier
+        guard shouldSuppressNextMainWindow else {
+            return
+        }
+
+        shouldSuppressNextMainWindow = false
+        window.close()
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        DispatchQueue.main.async {
-            self.closeAutomaticallyOpenedMainWindow()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.closeAutomaticallyOpenedMainWindow()
-        }
-    }
-
-    private func closeAutomaticallyOpenedMainWindow() {
-        for window in NSApp.windows where window.title == L10n.appName && window.isVisible {
-            window.close()
-        }
     }
 }

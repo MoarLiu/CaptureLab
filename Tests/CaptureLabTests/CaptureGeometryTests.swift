@@ -27,6 +27,17 @@ final class CaptureGeometryTests: XCTestCase {
         XCTAssertEqual(normalized.height, 0.5, accuracy: 0.01)
     }
 
+    func testFixedZoomCanvasContentCanExceedViewport() {
+        let contentSize = CaptureCanvasLayout.contentSize(
+            imageSize: CGSize(width: 1_600, height: 1_200),
+            viewportSize: CGSize(width: 800, height: 600),
+            zoomLevel: .actual
+        )
+
+        XCTAssertEqual(contentSize.width, 1_760, accuracy: 0.01)
+        XCTAssertEqual(contentSize.height, 1_320, accuracy: 0.01)
+    }
+
     func testAnnotationTranslationKeepsRectInsideImageBounds() {
         let annotation = CaptureAnnotation(
             kind: .rectangle,

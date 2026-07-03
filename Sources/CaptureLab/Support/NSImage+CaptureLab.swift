@@ -242,65 +242,10 @@ extension NSImage {
             return nil
         }
 
-        let sourceBounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
-        let cropRect = CGRect(
-            x: normalizedRect.minX * sourceBounds.width,
-            y: normalizedRect.minY * sourceBounds.height,
-            width: normalizedRect.width * sourceBounds.width,
-            height: normalizedRect.height * sourceBounds.height
-        )
-        .integral
-        .intersection(sourceBounds)
-
-        guard !cropRect.isNull,
-              cropRect.width >= 1,
-              cropRect.height >= 1,
-              let cropped = source.cropping(to: cropRect)
-        else {
+        guard let output = CapturePixelation.pixelatedImage(from: source, normalizedRect: normalizedRect) else {
             return nil
         }
 
-        let block = 6
-        let tinyWidth = max(1, cropped.width / block)
-        let tinyHeight = max(1, cropped.height / block)
-        let colorSpace = cropped.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
-
-        guard let smallContext = CGContext(
-            data: nil,
-            width: tinyWidth,
-            height: tinyHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo
-        ) else {
-            return nil
-        }
-        smallContext.interpolationQuality = .low
-        smallContext.draw(cropped, in: CGRect(x: 0, y: 0, width: tinyWidth, height: tinyHeight))
-
-        guard let small = smallContext.makeImage(),
-              let outputContext = CGContext(
-                data: nil,
-                width: cropped.width,
-                height: cropped.height,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo
-              )
-        else {
-            return nil
-        }
-
-        outputContext.interpolationQuality = .none
-        outputContext.draw(small, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
-
-        guard let output = outputContext.makeImage() else {
-            return nil
-        }
-
-        return NSImage(cgImage: output, size: CGSize(width: cropped.width, height: cropped.height))
+        return NSImage(cgImage: output, size: CGSize(width: output.width, height: output.height))
     }
 }

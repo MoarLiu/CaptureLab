@@ -9,6 +9,7 @@ struct CaptureLabRootView: View {
     @State private var window: NSWindow?
     @State private var toastMessage: String?
     @State private var toastToken = UUID()
+    @State private var zoomLevel: CaptureZoomLevel = .fit
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,6 +21,7 @@ struct CaptureLabRootView: View {
                 document: model.document,
                 annotations: $model.annotations,
                 selectedTool: $model.selectedTool,
+                zoomLevel: $zoomLevel,
                 captureAction: model.captureRegion,
                 openAction: model.openImage
             )
@@ -35,7 +37,8 @@ struct CaptureLabRootView: View {
                 copyAction: copyImageFromToolbar,
                 uploadAction: uploadImageFromToolbar,
                 doneAction: finishEditing,
-                isOCRPopoverPresented: $isOCRPopoverPresented
+                isOCRPopoverPresented: $isOCRPopoverPresented,
+                zoomLevel: $zoomLevel
             )
             .zIndex(100)
         }
@@ -102,6 +105,7 @@ private struct EditorTopBarView: View {
     let uploadAction: () -> Void
     let doneAction: () -> Void
     @Binding var isOCRPopoverPresented: Bool
+    @Binding var zoomLevel: CaptureZoomLevel
 
     var body: some View {
         HStack(spacing: 10) {
@@ -136,7 +140,7 @@ private struct EditorTopBarView: View {
             Spacer(minLength: 10)
 
             HStack(spacing: 7) {
-                ZoomToolbarMenu()
+                ZoomToolbarMenu(zoomLevel: $zoomLevel)
 
                 OCRToolbarButton(
                     model: model,
@@ -259,14 +263,24 @@ private struct DocumentToolbarStatusView: View {
 }
 
 private struct ZoomToolbarMenu: View {
+    @Binding var zoomLevel: CaptureZoomLevel
+
     var body: some View {
         Menu {
-            Button("50%") {}
-            Button("100%") {}
-            Button("200%") {}
+            ForEach(CaptureZoomLevel.allCases) { level in
+                Button {
+                    zoomLevel = level
+                } label: {
+                    if zoomLevel == level {
+                        Label(level.title, systemImage: "checkmark")
+                    } else {
+                        Text(level.title)
+                    }
+                }
+            }
         } label: {
             HStack(spacing: 4) {
-                Text("100%")
+                Text(zoomLevel.title)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
