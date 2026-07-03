@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 - 2026-07-03
+
+- Added Cloudflare R2 settings from the menu bar.
+- Added screenshot editor upload for the current rendered PNG.
+- Upload returns the public file URL to the clipboard.
+- Added Esc and Command-W window closing for app windows and alerts.
+- Launching CaptureLab no longer opens the main editor window automatically.
+
+Artifact:
+
+- `CaptureLab-0.2.0-macos-arm64.dmg`
+- SHA-256: `10ff51cba85321b51cb19e133c4b2907f428eec537268dc03e9ef73cfc2b3cfe`
+- `CaptureLab-0.2.0-macos-x86_64.dmg`
+- SHA-256: `811e66184ed82375ecc0dccf25338de1119ac394da4f21983fb746988864468f`
+
 ## 0.1.0 - 2026-07-03
 
 Initial CaptureLab release.

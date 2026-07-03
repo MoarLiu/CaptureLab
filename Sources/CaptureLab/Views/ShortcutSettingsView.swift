@@ -66,6 +66,7 @@ struct ShortcutSettingsView: View {
         .onAppear {
             draftShortcut = shortcutStore.captureShortcut
         }
+        .captureLabWindowCloseShortcuts()
     }
 
     private func close() {

@@ -45,6 +45,10 @@ enum L10n {
     static var copyImage: String { text(en: "Copy Image", zh: "复制图片") }
     static var savePNG: String { text(en: "Save PNG", zh: "保存 PNG") }
     static var upload: String { text(en: "Upload", zh: "上传") }
+    static var uploadEditedImage: String { text(en: "Upload Edited Image", zh: "上传编辑后图片") }
+    static var uploading: String { text(en: "Uploading...", zh: "正在上传...") }
+    static var uploadedURLCopied: String { text(en: "Uploaded URL copied", zh: "已上传，URL 已复制") }
+    static var uploadFailedTitle: String { text(en: "Upload Failed", zh: "上传失败") }
     static var inspector: String { text(en: "Inspector", zh: "检查器") }
     static var info: String { text(en: "Info", zh: "信息") }
     static var lines: String { text(en: "lines", zh: "行") }
@@ -142,4 +146,69 @@ enum L10n {
         )
     }
     static var ok: String { text(en: "OK", zh: "确定") }
+
+    static var cloudflareR2SettingsTitle: String { text(en: "Cloudflare R2 Settings", zh: "Cloudflare R2 设置") }
+    static var cloudflareR2SettingsMenuItem: String { text(en: "Cloudflare R2 Settings...", zh: "Cloudflare R2 设置...") }
+    static var r2Endpoint: String { text(en: "Endpoint", zh: "Endpoint") }
+    static var r2Bucket: String { text(en: "Bucket", zh: "Bucket") }
+    static var r2PathPrefix: String { text(en: "Path Prefix", zh: "路径前缀") }
+    static var r2PublicBaseURL: String { text(en: "Public Base URL", zh: "公开 URL 前缀") }
+    static var r2AccessKeyID: String { text(en: "Access Key ID", zh: "Access Key ID") }
+    static var r2SecretAccessKey: String { text(en: "Secret Access Key", zh: "Secret Access Key") }
+    static var r2KeepStoredSecret: String { text(en: "Leave blank to keep stored secret", zh: "留空则保留已保存密钥") }
+    static var r2SettingsSaved: String { text(en: "Cloudflare R2 settings saved.", zh: "Cloudflare R2 设置已保存。") }
+    static var r2SettingsNotConfigured: String {
+        text(en: "Cloudflare R2 is not configured.", zh: "Cloudflare R2 尚未配置。")
+    }
+    static func r2SettingsLoadFailed(_ message: String) -> String {
+        text(en: "Could not load Cloudflare R2 settings: \(message)", zh: "无法加载 Cloudflare R2 设置：\(message)")
+    }
+    static func r2IncompleteField(_ field: String) -> String {
+        text(en: "\(field) is required.", zh: "\(field) 为必填项。")
+    }
+    static func r2InvalidURL(_ field: String) -> String {
+        text(en: "\(field) must be a valid URL.", zh: "\(field) 必须是有效 URL。")
+    }
+    static func r2FileTooLarge(_ limit: Int) -> String {
+        text(en: "The image is larger than \(limit) bytes.", zh: "图片超过 \(limit) 字节限制。")
+    }
+    static var r2UploadNoHTTPResponse: String {
+        text(en: "Cloudflare R2 upload failed without an HTTP response.", zh: "Cloudflare R2 上传没有返回 HTTP 响应。")
+    }
+    static var r2UploadBadRequest: String {
+        text(en: "Cloudflare R2 rejected the request. Check the endpoint, bucket, and path prefix.", zh: "Cloudflare R2 拒绝了请求。请检查 Endpoint、Bucket 和路径前缀。")
+    }
+    static func r2UploadForbidden(_ statusCode: Int) -> String {
+        text(en: "Cloudflare R2 rejected the credentials or permissions (HTTP \(statusCode)).", zh: "Cloudflare R2 拒绝了凭据或权限 (HTTP \(statusCode))。")
+    }
+    static var r2UploadNotFound: String {
+        text(en: "Cloudflare R2 target was not found. Check the endpoint and bucket.", zh: "未找到 Cloudflare R2 目标。请检查 Endpoint 和 Bucket。")
+    }
+    static func r2UploadRateLimited(_ statusCode: Int) -> String {
+        text(en: "Cloudflare R2 timed out or rate-limited the upload (HTTP \(statusCode)).", zh: "Cloudflare R2 上传超时或触发限流 (HTTP \(statusCode))。")
+    }
+    static var r2UploadTooLarge: String {
+        text(en: "Cloudflare R2 refused the image because it is too large.", zh: "Cloudflare R2 因图片过大拒绝上传。")
+    }
+    static func r2UploadServerError(_ statusCode: Int) -> String {
+        text(en: "Cloudflare R2 is temporarily unavailable (HTTP \(statusCode)).", zh: "Cloudflare R2 暂时不可用 (HTTP \(statusCode))。")
+    }
+    static func r2UploadHTTPError(_ statusCode: Int) -> String {
+        text(en: "Cloudflare R2 upload failed with HTTP \(statusCode).", zh: "Cloudflare R2 上传失败，HTTP \(statusCode)。")
+    }
+    static var r2UploadOffline: String {
+        text(en: "This Mac is offline.", zh: "当前 Mac 未联网。")
+    }
+    static var r2UploadTimedOut: String {
+        text(en: "Cloudflare R2 upload timed out.", zh: "Cloudflare R2 上传超时。")
+    }
+    static var r2UploadCannotResolveHost: String {
+        text(en: "Could not resolve the Cloudflare R2 endpoint.", zh: "无法解析 Cloudflare R2 Endpoint。")
+    }
+    static var r2UploadConnectionLost: String {
+        text(en: "The connection to Cloudflare R2 was interrupted.", zh: "Cloudflare R2 连接中断。")
+    }
+    static func r2UploadNetworkError(_ message: String) -> String {
+        text(en: "Cloudflare R2 upload failed: \(message)", zh: "Cloudflare R2 上传失败：\(message)")
+    }
 }

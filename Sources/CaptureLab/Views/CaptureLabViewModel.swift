@@ -16,13 +16,23 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var isRecognizingText = false
     @Published private(set) var statusMessage = L10n.ready
     @Published private(set) var isCheckingForUpdates = false
+    @Published private(set) var isUploading = false
 
     private let captureService = ScreenCaptureService()
     private let textRecognitionService = TextRecognitionService()
     private let updateCheckService = UpdateCheckService()
+    private let r2SettingsStore: CloudflareR2SettingsStore
     private var annotationUndoStack: [[CaptureAnnotation]] = []
     private var isApplyingAnnotationHistory = false
     private let maxUndoDepth = 60
+
+    init() {
+        self.r2SettingsStore = CloudflareR2SettingsStore()
+    }
+
+    init(r2SettingsStore: CloudflareR2SettingsStore) {
+        self.r2SettingsStore = r2SettingsStore
+    }
 
     var hasImage: Bool {
         document != nil
@@ -144,6 +154,50 @@ final class CaptureLabViewModel: ObservableObject {
         }
     }
 
+    func uploadRenderedImage(onSuccess: ((String) -> Void)? = nil) {
+        guard !isUploading else {
+            return
+        }
+        guard let document else {
+            NSSound.beep()
+            return
+        }
+        let settings: CloudflareR2Settings
+        do {
+            settings = try r2SettingsStore.requiredSettings()
+        } catch {
+            presentUploadFailure(error)
+            return
+        }
+        guard let data = document.image.captureLabPNGData(annotations: annotations) else {
+            presentUploadFailure(CloudflareR2Error.imageExportFailed)
+            return
+        }
+
+        isUploading = true
+        statusMessage = L10n.uploading
+
+        let fileName = defaultUploadName(for: document)
+        let service = CloudflareR2UploadService()
+        Task {
+            do {
+                let result = try await service.upload(CloudflareR2UploadRequest(
+                    settings: settings,
+                    data: data,
+                    fileName: fileName,
+                    contentType: "image/png"
+                ))
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(result.url, forType: .string)
+                statusMessage = L10n.uploadedURLCopied
+                onSuccess?(result.url)
+            } catch {
+                presentUploadFailure(error)
+            }
+            isUploading = false
+        }
+    }
+
     func recognizeText() {
         guard let image = document?.image.captureLabCGImage() else {
             statusMessage = CaptureLabError.ocrImageUnavailable.localizedDescription
@@ -259,6 +313,13 @@ final class CaptureLabViewModel: ObservableObject {
         return "\(baseName)-edited.png"
     }
 
+    private func defaultUploadName(for document: CaptureDocument) -> String {
+        if let sourceURL = document.sourceURL {
+            return "\(sourceURL.deletingPathExtension().lastPathComponent)-edited.png"
+        }
+        return "capture-\(Self.uploadFileTimestampFormatter.string(from: document.createdAt)).png"
+    }
+
     private func trackAnnotationChange(from oldValue: [CaptureAnnotation], to newValue: [CaptureAnnotation]) {
         guard !isApplyingAnnotationHistory,
               oldValue != newValue
@@ -280,8 +341,15 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0"
     }
+
+    private static let uploadFileTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
 
     private func presentUpdateResult(_ result: UpdateCheckResult) {
         switch result {
@@ -294,7 +362,7 @@ final class CaptureLabViewModel: ObservableObject {
             alert.addButton(withTitle: L10n.openReleasePage)
             alert.addButton(withTitle: L10n.later)
 
-            if alert.runModal() == .alertFirstButtonReturn {
+            if alert.captureLabRunModal() == .alertFirstButtonReturn {
                 NSWorkspace.shared.open(releaseURL)
             }
         case .upToDate(let currentVersion, _):
@@ -304,7 +372,7 @@ final class CaptureLabViewModel: ObservableObject {
             alert.informativeText = L10n.upToDateMessage(current: currentVersion)
             alert.alertStyle = .informational
             alert.addButton(withTitle: L10n.ok)
-            alert.runModal()
+            _ = alert.captureLabRunModal()
         }
     }
 
@@ -315,6 +383,17 @@ final class CaptureLabViewModel: ObservableObject {
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
         alert.addButton(withTitle: L10n.ok)
-        alert.runModal()
+        _ = alert.captureLabRunModal()
+    }
+
+    private func presentUploadFailure(_ error: Error) {
+        statusMessage = error.localizedDescription
+        NSSound.beep()
+        let alert = NSAlert()
+        alert.messageText = L10n.uploadFailedTitle
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: L10n.ok)
+        _ = alert.captureLabRunModal()
     }
 }

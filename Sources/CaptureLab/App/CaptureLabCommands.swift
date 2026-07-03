@@ -5,6 +5,7 @@ struct CaptureLabCommands: Commands {
     @ObservedObject var model: CaptureLabViewModel
     @ObservedObject var shortcutStore: CaptureShortcutStore
     let showMainWindow: () -> Void
+    let showR2Settings: () -> Void
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
@@ -12,6 +13,10 @@ struct CaptureLabCommands: Commands {
                 model.checkForUpdates()
             }
             .disabled(model.isCheckingForUpdates)
+
+            Button(L10n.cloudflareR2SettingsMenuItem) {
+                showR2Settings()
+            }
 
             Divider()
         }
@@ -52,6 +57,12 @@ struct CaptureLabCommands: Commands {
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
             .disabled(!model.hasImage)
+
+            Button(model.isUploading ? L10n.uploading : L10n.uploadEditedImage) {
+                model.uploadRenderedImage()
+            }
+            .keyboardShortcut("u", modifiers: [.command, .shift])
+            .disabled(!model.hasImage || model.isUploading)
         }
 
         CommandGroup(replacing: .undoRedo) {
@@ -90,6 +101,11 @@ struct CaptureLabCommands: Commands {
                 model.saveRenderedImage()
             }
             .disabled(!model.hasImage)
+
+            Button(model.isUploading ? L10n.uploading : L10n.uploadEditedImage) {
+                model.uploadRenderedImage()
+            }
+            .disabled(!model.hasImage || model.isUploading)
         }
 
         CommandMenu(L10n.toolsMenu) {
@@ -130,6 +146,7 @@ struct CaptureLabMenuBarView: View {
     @ObservedObject var shortcutStore: CaptureShortcutStore
     let showMainWindow: () -> Void
     let showShortcutSettings: () -> Void
+    let showR2Settings: () -> Void
 
     var body: some View {
         Button(L10n.showCaptureLab, action: showMainWindow)
@@ -144,6 +161,10 @@ struct CaptureLabMenuBarView: View {
 
         Button(L10n.shortcutConfiguration) {
             showShortcutSettings()
+        }
+
+        Button(L10n.cloudflareR2SettingsMenuItem) {
+            showR2Settings()
         }
 
         Text(L10n.shortcutSummary(shortcutStore.captureShortcut.displayTitle))
@@ -199,6 +220,11 @@ struct CaptureLabMenuBarView: View {
             model.copyRenderedImage()
         }
         .disabled(!model.hasImage)
+
+        Button(model.isUploading ? L10n.uploading : L10n.uploadEditedImage) {
+            model.uploadRenderedImage()
+        }
+        .disabled(!model.hasImage || model.isUploading)
 
         Button(L10n.saveEditedImage) {
             showMainWindow()

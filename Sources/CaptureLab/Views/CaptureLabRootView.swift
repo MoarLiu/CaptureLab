@@ -33,6 +33,7 @@ struct CaptureLabRootView: View {
                 model: model,
                 shortcutStore: shortcutStore,
                 copyAction: copyImageFromToolbar,
+                uploadAction: uploadImageFromToolbar,
                 doneAction: finishEditing,
                 isOCRPopoverPresented: $isOCRPopoverPresented
             )
@@ -47,6 +48,7 @@ struct CaptureLabRootView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .captureLabWindowCloseShortcuts()
     }
 
     private func copyImageFromToolbar() {
@@ -54,6 +56,12 @@ struct CaptureLabRootView: View {
             return
         }
         showToast(L10n.copiedToClipboard)
+    }
+
+    private func uploadImageFromToolbar() {
+        model.uploadRenderedImage { _ in
+            showToast(L10n.uploadedURLCopied)
+        }
     }
 
     private func finishEditing() {
@@ -91,6 +99,7 @@ private struct EditorTopBarView: View {
     @ObservedObject var model: CaptureLabViewModel
     @ObservedObject var shortcutStore: CaptureShortcutStore
     let copyAction: () -> Void
+    let uploadAction: () -> Void
     let doneAction: () -> Void
     @Binding var isOCRPopoverPresented: Bool
 
@@ -139,8 +148,13 @@ private struct EditorTopBarView: View {
                 }
                 .disabled(!model.hasImage)
 
-                ToolbarIconButton(systemImage: "icloud.and.arrow.up.fill", help: L10n.upload, isPrimary: false) {}
-                    .disabled(true)
+                ToolbarIconButton(
+                    systemImage: model.isUploading ? "hourglass" : "icloud.and.arrow.up.fill",
+                    help: model.isUploading ? L10n.uploading : L10n.upload,
+                    isPrimary: false,
+                    action: uploadAction
+                )
+                .disabled(!model.hasImage || model.isUploading)
 
                 Button {
                     model.saveRenderedImage()
