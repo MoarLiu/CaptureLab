@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1 - 2026-07-04
+
+- Fixed Done so finishing an edit copies the rendered image, clears the active document, and prevents the previous image from reopening from the Dock.
+- Replaced update-check release-page handoff with direct DMG download, sha256 verification, in-place install, and relaunch.
+
+Artifact:
+
+- `CaptureLab-0.4.1-macos-arm64.dmg`
+- SHA-256: `f802d0ae55b4f08a25cd8cc2a10862907e68b023b6ae8e71c0f0ff7c6caf793d`
+- `CaptureLab-0.4.1-macos-arm64.dmg.sha256`
+- `CaptureLab-0.4.1-macos-x86_64.dmg`
+- SHA-256: `547c79d232271f01863e1e57f942ee5981834cc18f0947faf87267ebefc6137a`
+- `CaptureLab-0.4.1-macos-x86_64.dmg.sha256`
+
 ## 0.4.0 - 2026-07-04
 
 - Added a global screenshot shortcut that works while CaptureLab is in the background.

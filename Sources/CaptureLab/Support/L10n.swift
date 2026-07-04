@@ -176,11 +176,17 @@ enum L10n {
     static var updateAvailableTitle: String { text(en: "Update Available", zh: "发现新版本") }
     static func updateAvailableMessage(current: String, latest: String) -> String {
         text(
-            en: "CaptureLab \(latest) is available. Current version: \(current).",
-            zh: "CaptureLab \(latest) 已发布。当前版本：\(current)。"
+            en: "CaptureLab \(latest) is available. Current version: \(current). CaptureLab can download, verify, install, and relaunch automatically.",
+            zh: "CaptureLab \(latest) 已发布。当前版本：\(current)。CaptureLab 可以自动下载、校验、安装并重启。"
         )
     }
-    static var openReleasePage: String { text(en: "Open Release Page", zh: "打开发布页") }
+    static var installUpdate: String { text(en: "Install Update", zh: "安装更新") }
+    static func downloadingUpdate(_ version: String) -> String {
+        text(en: "Downloading CaptureLab \(version)...", zh: "正在下载 CaptureLab \(version)...")
+    }
+    static var installingUpdate: String {
+        text(en: "Installing update and relaunching...", zh: "正在安装更新并重启...")
+    }
     static var later: String { text(en: "Later", zh: "稍后") }
     static var upToDateTitle: String { text(en: "CaptureLab is up to date", zh: "CaptureLab 已是最新版本") }
     static func upToDateMessage(current: String) -> String {
@@ -192,6 +198,21 @@ enum L10n {
             en: "No public release was found for https://github.com/MoarLiu/CaptureLab.",
             zh: "没有在 https://github.com/MoarLiu/CaptureLab 找到公开发布版本。"
         )
+    }
+    static func updateAssetUnavailable(_ architecture: String) -> String {
+        text(
+            en: "No downloadable CaptureLab update was found for \(architecture).",
+            zh: "没有找到适用于 \(architecture) 的 CaptureLab 可下载更新。"
+        )
+    }
+    static var updateDownloadFailed: String {
+        text(en: "Could not download the update.", zh: "无法下载更新。")
+    }
+    static var updateChecksumMismatch: String {
+        text(en: "The downloaded update did not pass checksum verification.", zh: "下载的更新未通过校验。")
+    }
+    static func updateInstallFailed(_ message: String) -> String {
+        text(en: "Could not install the update: \(message)", zh: "无法安装更新：\(message)")
     }
     static var ok: String { text(en: "OK", zh: "确定") }
 

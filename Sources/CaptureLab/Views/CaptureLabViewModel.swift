@@ -22,6 +22,7 @@ final class CaptureLabViewModel: ObservableObject {
     private let captureService = ScreenCaptureService()
     private let textRecognitionService = TextRecognitionService()
     private let updateCheckService = UpdateCheckService()
+    private let updateInstallService = UpdateInstallService()
     private let r2SettingsStore: CloudflareR2SettingsStore
     private let historyStore: CaptureHistoryStore
     private var annotationUndoStack: [[CaptureAnnotation]] = []
@@ -223,6 +224,15 @@ final class CaptureLabViewModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func finishEditing() -> Bool {
+        guard copyRenderedImage() else {
+            return false
+        }
+        clearDocument()
+        return true
+    }
+
     func saveHistoryItem(_ item: CaptureHistoryItem) {
         let panel = NSSavePanel()
         panel.title = L10n.saveCaptureTitle
@@ -347,7 +357,7 @@ final class CaptureLabViewModel: ObservableObject {
         Task {
             do {
                 let result = try await updateCheckService.checkForUpdates(currentVersion: Self.currentAppVersion)
-                presentUpdateResult(result)
+                try await presentUpdateResult(result)
             } catch {
                 presentUpdateFailure(error)
             }
@@ -455,7 +465,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.1"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {
@@ -465,19 +475,23 @@ final class CaptureLabViewModel: ObservableObject {
         return formatter
     }()
 
-    private func presentUpdateResult(_ result: UpdateCheckResult) {
+    private func presentUpdateResult(_ result: UpdateCheckResult) async throws {
         switch result {
-        case .updateAvailable(let currentVersion, let latestVersion, let releaseURL):
+        case .updateAvailable(let currentVersion, let latestVersion, let package):
             statusMessage = L10n.updateAvailableTitle
             let alert = NSAlert()
             alert.messageText = L10n.updateAvailableTitle
             alert.informativeText = L10n.updateAvailableMessage(current: currentVersion, latest: latestVersion)
             alert.alertStyle = .informational
-            alert.addButton(withTitle: L10n.openReleasePage)
+            alert.addButton(withTitle: L10n.installUpdate)
             alert.addButton(withTitle: L10n.later)
 
             if alert.captureLabRunModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(releaseURL)
+                statusMessage = L10n.downloadingUpdate(latestVersion)
+                let dmgURL = try await updateCheckService.downloadUpdate(package, latestVersion: latestVersion)
+                statusMessage = L10n.installingUpdate
+                try updateInstallService.installAndRelaunch(dmgURL: dmgURL)
+                NSApp.terminate(nil)
             }
         case .upToDate(let currentVersion, _):
             statusMessage = L10n.upToDateTitle

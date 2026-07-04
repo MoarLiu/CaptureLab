@@ -68,7 +68,7 @@ struct CaptureLabRootView: View {
     }
 
     private func finishEditing() {
-        guard model.copyRenderedImage() else {
+        guard model.finishEditing() else {
             return
         }
 
