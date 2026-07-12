@@ -7,7 +7,8 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "CaptureLab", targets: ["CaptureLab"])
+        .executable(name: "CaptureLab", targets: ["CaptureLab"]),
+        .executable(name: "CaptureLabUpdateSwap", targets: ["CaptureLabUpdateSwap"])
     ],
     targets: [
         .executableTarget(
@@ -18,14 +19,19 @@ let package = Package(
                 .linkedFramework("Carbon"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CryptoKit"),
+                .linkedFramework("Security"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("UniformTypeIdentifiers"),
                 .linkedFramework("Vision")
             ]
         ),
+        .executableTarget(
+            name: "CaptureLabUpdateSwap",
+            path: "Sources/CaptureLabUpdateSwap"
+        ),
         .testTarget(
             name: "CaptureLabTests",
-            dependencies: ["CaptureLab"],
+            dependencies: ["CaptureLab", "CaptureLabUpdateSwap"],
             path: "Tests/CaptureLabTests"
         )
     ]

@@ -30,7 +30,7 @@ struct CaptureLabApp: App {
         Window(L10n.shortcutSettingsTitle, id: "shortcut-settings") {
             ShortcutSettingsView(
                 shortcutStore: shortcutStore,
-                onSave: configureGlobalHotKey
+                onSave: registerGlobalHotKey
             )
         }
         .windowResizability(.contentSize)
@@ -73,9 +73,19 @@ struct CaptureLabApp: App {
     }
 
     private func configureGlobalHotKey() {
-        globalHotKeyController.configure(shortcut: shortcutStore.captureShortcut) {
+        _ = globalHotKeyController.configure(shortcut: shortcutStore.captureShortcut) {
             model.capture(.region, onSuccess: showMainWindow)
         }
+    }
+
+    private func registerGlobalHotKey(_ shortcut: CaptureKeyboardShortcut) -> String? {
+        let didRegister = globalHotKeyController.configure(shortcut: shortcut) {
+            model.capture(.region, onSuccess: showMainWindow)
+        }
+        return didRegister
+            ? nil
+            : globalHotKeyController.registrationError
+                ?? L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
     }
 
     private func showShortcutSettings() {
@@ -91,6 +101,7 @@ struct CaptureLabApp: App {
     }
 }
 
+@MainActor
 final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
     static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("CaptureLab.main-window")
     private static var shouldSuppressNextMainWindow = true
@@ -111,10 +122,15 @@ final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        try? ScreenCaptureLifecycle.shared.prepareForLaunch()
         NSApp.setActivationPolicy(.accessory)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        ScreenCaptureLifecycle.shared.shutdown()
     }
 }

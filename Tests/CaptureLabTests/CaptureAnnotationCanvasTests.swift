@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import CaptureLab
 
@@ -131,22 +132,182 @@ final class CaptureAnnotationCanvasTests: XCTestCase {
 
         XCTAssertTrue(harness.view.annotations.isEmpty)
     }
+
+    func testEditingSessionSynchronouslyCommitsPendingTextBeforeFocusEnds() throws {
+        let harness = CanvasHarness(tool: .text)
+        defer { harness.close() }
+
+        harness.click(at: CGPoint(x: 280, y: 200))
+        let field = try XCTUnwrap(harness.view.subviews.compactMap { $0 as? NSTextField }.first)
+        field.stringValue = "Pending export text"
+        XCTAssertNotEqual(harness.view.annotations[0].text, "Pending export text")
+
+        CaptureEditingSession.commitPendingTextEdits()
+
+        XCTAssertEqual(harness.view.annotations[0].text, "Pending export text")
+        XCTAssertFalse(harness.view.subviews.contains { $0 is NSTextField })
+    }
+
+    func testDismantleCommitsPendingTextBeforeZoomRebuild() throws {
+        let harness = CanvasHarness(tool: .text)
+        defer { harness.close() }
+
+        harness.click(at: CGPoint(x: 280, y: 200))
+        let field = try XCTUnwrap(harness.view.subviews.compactMap { $0 as? NSTextField }.first)
+        field.stringValue = "Text preserved across zoom"
+        XCTAssertNotEqual(harness.boundAnnotations[0].text, "Text preserved across zoom")
+
+        harness.dismantle()
+
+        XCTAssertEqual(harness.boundAnnotations[0].text, "Text preserved across zoom")
+        XCTAssertFalse(harness.view.subviews.contains { $0 is NSTextField })
+
+        // Fixed zoom wraps the representable in a ScrollView, so SwiftUI builds
+        // a replacement AppKit canvas from the binding committed at teardown.
+        let replacement = CaptureAnnotationNSCanvasView(
+            frame: NSRect(x: 0, y: 0, width: 800, height: 600)
+        )
+        replacement.annotations = harness.boundAnnotations
+        XCTAssertEqual(replacement.annotations[0].text, "Text preserved across zoom")
+    }
+
+    func testStaticMosaicReusesCachedImageAndReplacesResizedEntry() throws {
+        let harness = CanvasHarness(tool: .mosaic)
+        defer { harness.close() }
+        harness.drag(from: CGPoint(x: 160, y: 120), to: CGPoint(x: 360, y: 260))
+
+        let annotation = try XCTUnwrap(harness.view.annotations.first)
+        let first = try XCTUnwrap(harness.view.cachedPixelatedImage(for: annotation))
+        let second = try XCTUnwrap(harness.view.cachedPixelatedImage(for: annotation))
+
+        XCTAssertTrue(first === second)
+        XCTAssertEqual(harness.view.mosaicCacheEntryCount, 1)
+
+        let resized = annotation.withNormalizedRect(
+            CGRect(x: 0.1, y: 0.1, width: 0.6, height: 0.5)
+        )
+        harness.view.annotations = [resized]
+        let replacement = try XCTUnwrap(harness.view.cachedPixelatedImage(for: resized))
+
+        XCTAssertFalse(first === replacement)
+        XCTAssertEqual(harness.view.mosaicCacheEntryCount, 1)
+    }
+
+    func testMosaicCacheGrowthIsBounded() throws {
+        let harness = CanvasHarness(tool: .mosaic)
+        defer { harness.close() }
+        let annotations = (0..<40).map { index in
+            CaptureAnnotation(
+                kind: .mosaic,
+                normalizedRect: CGRect(
+                    x: CGFloat(index % 8) * 0.1,
+                    y: CGFloat(index / 8) * 0.1,
+                    width: 0.08,
+                    height: 0.08
+                )
+            )
+        }
+        harness.view.annotations = annotations
+
+        for annotation in annotations {
+            _ = try XCTUnwrap(harness.view.cachedPixelatedImage(for: annotation))
+        }
+
+        XCTAssertLessThanOrEqual(harness.view.mosaicCacheEntryCount, 32)
+        XCTAssertLessThanOrEqual(harness.view.mosaicCacheCostInPixels, 16_000_000)
+    }
+
+    func testSixKFullFrameMosaicPreviewRemainsCached() throws {
+        let source = try CanvasHarness.sixKFixtureImage()
+        let harness = CanvasHarness(tool: .mosaic, image: source)
+        defer { harness.close() }
+        let annotation = CaptureAnnotation(
+            kind: .mosaic,
+            normalizedRect: CGRect(x: 0, y: 0, width: 1, height: 1)
+        )
+        harness.view.annotations = [annotation]
+
+        XCTAssertGreaterThan(6_144 * 3_456, 16_000_000)
+        let first = try XCTUnwrap(harness.view.cachedPixelatedImage(for: annotation))
+        let second = try XCTUnwrap(harness.view.cachedPixelatedImage(for: annotation))
+
+        XCTAssertTrue(first === second)
+        XCTAssertEqual(harness.view.mosaicCacheEntryCount, 1)
+        XCTAssertLessThanOrEqual(harness.view.mosaicCacheCostInPixels, 4_000_000)
+    }
+
+    func testMultipleLargeMosaicRegionsSurviveRepeatedDrawOrder() throws {
+        let source = try CanvasHarness.sixKFixtureImage()
+        let harness = CanvasHarness(tool: .mosaic, image: source)
+        defer { harness.close() }
+        let annotations = (0..<3).map { index in
+            CaptureAnnotation(
+                kind: .mosaic,
+                normalizedRect: CGRect(
+                    x: CGFloat(index) / 3,
+                    y: 0,
+                    width: 1 / 3,
+                    height: 1
+                )
+            )
+        }
+        harness.view.annotations = annotations
+
+        // At source resolution these three regions exceed the old 16M-pixel
+        // budget in aggregate and a sequential LRU scan evicted every entry.
+        XCTAssertGreaterThan(6_144 * 3_456, 16_000_000)
+        let firstPass = try annotations.map {
+            try XCTUnwrap(harness.view.cachedPixelatedImage(for: $0))
+        }
+        let secondPass = try annotations.map {
+            try XCTUnwrap(harness.view.cachedPixelatedImage(for: $0))
+        }
+
+        XCTAssertEqual(harness.view.mosaicCacheEntryCount, annotations.count)
+        XCTAssertLessThanOrEqual(harness.view.mosaicCacheCostInPixels, 16_000_000)
+        for index in annotations.indices {
+            XCTAssertTrue(firstPass[index] === secondPass[index])
+        }
+    }
 }
 
 @MainActor
 private final class CanvasHarness {
     let view: CaptureAnnotationNSCanvasView
+    private let annotationBox = CanvasAnnotationBox()
 
-    init(tool: CaptureTool) {
+    init(tool: CaptureTool, image: NSImage? = nil) {
         view = CaptureAnnotationNSCanvasView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-        view.setDocument(CaptureDocument(image: Self.fixtureImage(), sourceURL: nil, createdAt: Date(timeIntervalSinceReferenceDate: 0)))
+        view.setDocument(CaptureDocument(
+            image: image ?? Self.fixtureImage(),
+            sourceURL: nil,
+            createdAt: Date(timeIntervalSinceReferenceDate: 0)
+        ))
+        view.setEditingSession(.shared)
         view.selectedTool = tool
-        view.onAnnotationsChanged = { [weak view] annotations in
+        view.onAnnotationsChanged = { [weak view, annotationBox] annotations in
+            annotationBox.annotations = annotations
             view?.annotations = annotations
         }
     }
 
+    var boundAnnotations: [CaptureAnnotation] {
+        annotationBox.annotations
+    }
+
     func close() {
+        view.prepareForDismantle()
+    }
+
+    func dismantle() {
+        let binding = Binding<[CaptureAnnotation]>(
+            get: { self.annotationBox.annotations },
+            set: { self.annotationBox.annotations = $0 }
+        )
+        CaptureAnnotationCanvasView.dismantleNSView(
+            view,
+            coordinator: CaptureAnnotationCanvasView.Coordinator(annotations: binding)
+        )
     }
 
     func drag(from start: CGPoint, to end: CGPoint) {
@@ -199,4 +360,32 @@ private final class CanvasHarness {
         image.unlockFocus()
         return image
     }
+
+    static func sixKFixtureImage() throws -> NSImage {
+        let width = 6_144
+        let height = 3_456
+        let bytesPerRow = (width + 7) / 8
+        let provider = try XCTUnwrap(CGDataProvider(
+            data: Data(repeating: 0b1010_1010, count: bytesPerRow * height) as CFData
+        ))
+        let source = try XCTUnwrap(CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 1,
+            bitsPerPixel: 1,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ))
+        return NSImage(cgImage: source, size: CGSize(width: width, height: height))
+    }
+}
+
+@MainActor
+private final class CanvasAnnotationBox {
+    var annotations: [CaptureAnnotation] = []
 }

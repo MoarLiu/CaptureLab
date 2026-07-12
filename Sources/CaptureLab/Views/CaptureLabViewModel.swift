@@ -3,7 +3,68 @@ import Foundation
 import UniformTypeIdentifiers
 
 @MainActor
+protocol CaptureWindowRestoring: AnyObject {
+    func restore()
+}
+
+@MainActor
+protocol CaptureWindowVisibilityCoordinating: AnyObject {
+    func hideVisibleWindowsForCapture() -> any CaptureWindowRestoring
+    func waitUntilWindowsAreHidden() async
+}
+
+@MainActor
+final class SystemCaptureWindowVisibilityCoordinator: CaptureWindowVisibilityCoordinating {
+    func hideVisibleWindowsForCapture() -> any CaptureWindowRestoring {
+        let visibleWindows = NSApp.windows.filter(\.isVisible)
+        let keyWindow = NSApp.keyWindow
+        visibleWindows.forEach { $0.orderOut(nil) }
+        return SystemCaptureWindowRestoration(windows: visibleWindows, keyWindow: keyWindow)
+    }
+
+    func waitUntilWindowsAreHidden() async {
+        // AppKit sends orderOut to WindowServer asynchronously. Give it a render
+        // turn before starting screencapture so CaptureLab cannot enter the frame.
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+    }
+}
+
+@MainActor
+private final class SystemCaptureWindowRestoration: CaptureWindowRestoring {
+    private let windows: [NSWindow]
+    private weak var keyWindow: NSWindow?
+    private var didRestore = false
+
+    init(windows: [NSWindow], keyWindow: NSWindow?) {
+        self.windows = windows
+        self.keyWindow = keyWindow
+    }
+
+    func restore() {
+        guard !didRestore else { return }
+        didRestore = true
+
+        windows.forEach { window in
+            if !window.isVisible {
+                window.orderFront(nil)
+            }
+        }
+        if let keyWindow, !keyWindow.isMiniaturized {
+            keyWindow.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
+@MainActor
 final class CaptureLabViewModel: ObservableObject {
+    typealias CaptureOperation = @MainActor (CaptureMode) async throws -> URL
+    typealias TextRecognitionOperation = @MainActor (CGImage) async throws -> OCRResult
+    typealias UploadOperation = @MainActor (CloudflareR2UploadRequest) async throws -> CloudflareR2UploadResult
+    typealias ImageRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> NSImage?
+    typealias PNGDataRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> Data?
+    typealias SaveDestinationOperation = @MainActor (_ suggestedFileName: String) -> URL?
+
     @Published private(set) var document: CaptureDocument?
     @Published var annotations: [CaptureAnnotation] = [] {
         didSet {
@@ -19,31 +80,77 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var isUploading = false
     @Published private(set) var historyItems: [CaptureHistoryItem]
 
-    private let captureService = ScreenCaptureService()
-    private let textRecognitionService = TextRecognitionService()
     private let updateCheckService = UpdateCheckService()
     private let updateInstallService = UpdateInstallService()
     private let r2SettingsStore: CloudflareR2SettingsStore
     private let historyStore: CaptureHistoryStore
+    private let pasteboard: NSPasteboard
+    private let windowVisibilityCoordinator: any CaptureWindowVisibilityCoordinating
+    private let captureOperation: CaptureOperation
+    private let textRecognitionOperation: TextRecognitionOperation
+    private let uploadOperation: UploadOperation
+    private let imageRenderingOperation: ImageRenderingOperation
+    private let pngDataRenderingOperation: PNGDataRenderingOperation
+    private let saveDestinationOperation: SaveDestinationOperation
     private var annotationUndoStack: [[CaptureAnnotation]] = []
     private var isApplyingAnnotationHistory = false
     private let maxUndoDepth = 60
+    private var documentGeneration: UInt64 = 0
+    private var ocrRequestID: UUID?
+    private var ocrTask: Task<Void, Never>?
+    private var uploadRequestID: UUID?
+    private var uploadTask: Task<Void, Never>?
 
     init() {
         self.r2SettingsStore = CloudflareR2SettingsStore()
         self.historyStore = CaptureHistoryStore()
+        self.pasteboard = .general
+        self.windowVisibilityCoordinator = SystemCaptureWindowVisibilityCoordinator()
+        self.captureOperation = Self.defaultCaptureOperation
+        self.textRecognitionOperation = Self.defaultTextRecognitionOperation
+        self.uploadOperation = Self.defaultUploadOperation
+        self.imageRenderingOperation = Self.defaultImageRenderingOperation
+        self.pngDataRenderingOperation = Self.defaultPNGDataRenderingOperation
+        self.saveDestinationOperation = Self.defaultSaveDestinationOperation
         self.historyItems = historyStore.items
     }
 
     init(r2SettingsStore: CloudflareR2SettingsStore) {
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = CaptureHistoryStore()
+        self.pasteboard = .general
+        self.windowVisibilityCoordinator = SystemCaptureWindowVisibilityCoordinator()
+        self.captureOperation = Self.defaultCaptureOperation
+        self.textRecognitionOperation = Self.defaultTextRecognitionOperation
+        self.uploadOperation = Self.defaultUploadOperation
+        self.imageRenderingOperation = Self.defaultImageRenderingOperation
+        self.pngDataRenderingOperation = Self.defaultPNGDataRenderingOperation
+        self.saveDestinationOperation = Self.defaultSaveDestinationOperation
         self.historyItems = historyStore.items
     }
 
-    init(r2SettingsStore: CloudflareR2SettingsStore, historyStore: CaptureHistoryStore) {
+    init(
+        r2SettingsStore: CloudflareR2SettingsStore,
+        historyStore: CaptureHistoryStore,
+        pasteboard: NSPasteboard = .general,
+        windowVisibilityCoordinator: (any CaptureWindowVisibilityCoordinating)? = nil,
+        captureOperation: @escaping CaptureOperation = CaptureLabViewModel.defaultCaptureOperation,
+        textRecognitionOperation: @escaping TextRecognitionOperation = CaptureLabViewModel.defaultTextRecognitionOperation,
+        uploadOperation: @escaping UploadOperation = CaptureLabViewModel.defaultUploadOperation,
+        imageRenderingOperation: @escaping ImageRenderingOperation = CaptureLabViewModel.defaultImageRenderingOperation,
+        pngDataRenderingOperation: @escaping PNGDataRenderingOperation = CaptureLabViewModel.defaultPNGDataRenderingOperation,
+        saveDestinationOperation: @escaping SaveDestinationOperation = CaptureLabViewModel.defaultSaveDestinationOperation
+    ) {
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = historyStore
+        self.pasteboard = pasteboard
+        self.windowVisibilityCoordinator = windowVisibilityCoordinator ?? SystemCaptureWindowVisibilityCoordinator()
+        self.captureOperation = captureOperation
+        self.textRecognitionOperation = textRecognitionOperation
+        self.uploadOperation = uploadOperation
+        self.imageRenderingOperation = imageRenderingOperation
+        self.pngDataRenderingOperation = pngDataRenderingOperation
+        self.saveDestinationOperation = saveDestinationOperation
         self.historyItems = historyStore.items
     }
 
@@ -94,11 +201,25 @@ final class CaptureLabViewModel: ObservableObject {
         isCapturing = true
         statusMessage = mode.promptTitle
 
-        let captureService = self.captureService
+        let restoration = windowVisibilityCoordinator.hideVisibleWindowsForCapture()
+        let captureOperation = self.captureOperation
+        let windowVisibilityCoordinator = self.windowVisibilityCoordinator
         Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { try captureService.captureFile(mode: mode) }
-            }.value
+            await windowVisibilityCoordinator.waitUntilWindowsAreHidden()
+
+            let result: Result<URL, Error>
+            do {
+                result = .success(try await captureOperation(mode))
+            } catch {
+                result = .failure(error)
+            }
+
+            restoration.restore()
+            defer {
+                if case .success(let url) = result {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
 
             guard let self else {
                 return
@@ -138,13 +259,18 @@ final class CaptureLabViewModel: ObservableObject {
 
     @discardableResult
     func copyRenderedImage(successStatus: String = L10n.imageCopied) -> Bool {
+        CaptureEditingSession.commitPendingTextEdits()
         guard let document else {
             NSSound.beep()
             return false
         }
-        let rendered = document.image.renderedWithCaptureLabAnnotations(annotations)
-        NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.writeObjects([rendered])
+        guard let rendered = imageRenderingOperation(document.image, annotations) else {
+            statusMessage = L10n.imageCopyFailed
+            NSSound.beep()
+            return false
+        }
+        pasteboard.clearContents()
+        let didCopy = pasteboard.writeObjects([rendered])
         statusMessage = didCopy ? successStatus : L10n.imageCopyFailed
         if !didCopy {
             NSSound.beep()
@@ -153,23 +279,22 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func saveRenderedImage() {
+        CaptureEditingSession.commitPendingTextEdits()
         guard let document else {
             NSSound.beep()
             return
         }
 
-        let panel = NSSavePanel()
-        panel.title = L10n.saveCaptureTitle
-        panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = defaultSaveName(for: document)
-
-        guard panel.runModal() == .OK, let url = panel.url else {
-            return
-        }
-
-        guard let data = document.image.captureLabPNGData(annotations: annotations) else {
+        // Render before entering the modal run loop. Global hotkeys remain active
+        // while NSSavePanel is open, so both the source image and annotations must
+        // already be frozen into immutable bytes before another capture can replace
+        // the current document.
+        guard let data = pngDataRenderingOperation(document.image, annotations) else {
             statusMessage = CaptureLabError.imageExportFailed.localizedDescription
             NSSound.beep()
+            return
+        }
+        guard let url = saveDestinationOperation(defaultSaveName(for: document)) else {
             return
         }
 
@@ -183,6 +308,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func uploadRenderedImage(onSuccess: ((String) -> Void)? = nil) {
+        CaptureEditingSession.commitPendingTextEdits()
         guard !isUploading else {
             return
         }
@@ -210,14 +336,17 @@ final class CaptureLabViewModel: ObservableObject {
 
     func copyHistoryItem(_ item: CaptureHistoryItem) {
         let url = historyStore.url(for: item)
-        guard let image = NSImage(contentsOf: url), image.isValid else {
+        guard let data = try? Data(contentsOf: url),
+              let image = NSImage(data: data),
+              image.isValid
+        else {
             statusMessage = CaptureHistoryError.imageNotFound.localizedDescription
             NSSound.beep()
             return
         }
 
-        NSPasteboard.general.clearContents()
-        let didCopy = NSPasteboard.general.writeObjects([image])
+        pasteboard.clearContents()
+        let didCopy = pasteboard.writeObjects([image])
         statusMessage = didCopy ? L10n.imageCopied : L10n.imageCopyFailed
         if !didCopy {
             NSSound.beep()
@@ -226,6 +355,7 @@ final class CaptureLabViewModel: ObservableObject {
 
     @discardableResult
     func finishEditing() -> Bool {
+        CaptureEditingSession.commitPendingTextEdits()
         guard copyRenderedImage() else {
             return false
         }
@@ -282,23 +412,40 @@ final class CaptureLabViewModel: ObservableObject {
         isUploading = true
         statusMessage = L10n.uploading
 
-        let service = CloudflareR2UploadService()
-        Task {
+        let requestID = UUID()
+        uploadRequestID = requestID
+        let uploadOperation = self.uploadOperation
+        uploadTask = Task { [weak self] in
             do {
-                let result = try await service.upload(CloudflareR2UploadRequest(
+                let result = try await uploadOperation(CloudflareR2UploadRequest(
                     settings: settings,
                     data: data,
                     fileName: fileName,
                     contentType: "image/png"
                 ))
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(result.url, forType: .string)
-                statusMessage = L10n.uploadedURLCopied
+                try Task.checkCancellation()
+                guard let self, self.uploadRequestID == requestID else {
+                    return
+                }
+                self.pasteboard.clearContents()
+                self.pasteboard.setString(result.url, forType: .string)
+                self.statusMessage = L10n.uploadedURLCopied
                 onSuccess?(result.url)
             } catch {
-                presentUploadFailure(error)
+                guard let self, self.uploadRequestID == requestID else {
+                    return
+                }
+                if !(error is CancellationError) {
+                    self.presentUploadFailure(error)
+                }
             }
-            isUploading = false
+
+            guard let self, self.uploadRequestID == requestID else {
+                return
+            }
+            self.uploadRequestID = nil
+            self.uploadTask = nil
+            self.isUploading = false
         }
     }
 
@@ -309,24 +456,47 @@ final class CaptureLabViewModel: ObservableObject {
             return
         }
 
+        cancelTextRecognition()
+        let requestID = UUID()
+        let generation = documentGeneration
+        ocrRequestID = requestID
         isRecognizingText = true
         statusMessage = L10n.recognizingText
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try self.textRecognitionService.recognizeText(in: image) }
-            DispatchQueue.main.async {
-                self.isRecognizingText = false
-                switch result {
-                case .success(let ocr):
-                    self.ocrText = ocr.text
-                    self.statusMessage = ocr.lineCount == 0
-                        ? L10n.noTextFound
-                        : L10n.recognizedLines(ocr.lineCount)
-                case .failure(let error):
+        let textRecognitionOperation = self.textRecognitionOperation
+        ocrTask = Task { [weak self] in
+            do {
+                let ocr = try await textRecognitionOperation(image)
+                try Task.checkCancellation()
+                guard let self,
+                      self.ocrRequestID == requestID,
+                      self.documentGeneration == generation
+                else {
+                    return
+                }
+                self.ocrText = ocr.text
+                self.statusMessage = ocr.lineCount == 0
+                    ? L10n.noTextFound
+                    : L10n.recognizedLines(ocr.lineCount)
+            } catch {
+                guard let self,
+                      self.ocrRequestID == requestID,
+                      self.documentGeneration == generation
+                else {
+                    return
+                }
+                if !(error is CancellationError) {
                     self.statusMessage = error.localizedDescription
                     NSSound.beep()
                 }
             }
+
+            guard let self, self.ocrRequestID == requestID else {
+                return
+            }
+            self.ocrRequestID = nil
+            self.ocrTask = nil
+            self.isRecognizingText = false
         }
     }
 
@@ -336,12 +506,13 @@ final class CaptureLabViewModel: ObservableObject {
             NSSound.beep()
             return
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
         statusMessage = L10n.ocrTextCopied
     }
 
     func clearOCRText() {
+        cancelTextRecognition()
         ocrText = ""
         statusMessage = L10n.ocrTextCleared
     }
@@ -376,6 +547,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func undoAnnotation() {
+        CaptureEditingSession.commitPendingTextEdits()
         guard let previousAnnotations = annotationUndoStack.popLast() else {
             return
         }
@@ -386,11 +558,14 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func clearAnnotations() {
+        CaptureEditingSession.commitPendingTextEdits()
         annotations.removeAll()
         statusMessage = L10n.markupCleared
     }
 
     func clearDocument() {
+        CaptureEditingSession.commitPendingTextEdits()
+        invalidateDocumentActivities()
         document = nil
         resetAnnotations()
         ocrText = ""
@@ -399,12 +574,20 @@ final class CaptureLabViewModel: ObservableObject {
 
     @discardableResult
     private func loadImage(from url: URL, sourceURL: URL?, status: String) -> Bool {
-        guard let image = NSImage(contentsOf: url), image.isValid else {
+        guard let data = try? Data(contentsOf: url),
+              let image = NSImage(data: data),
+              image.isValid
+        else {
             statusMessage = CaptureLabError.imageLoadFailed.localizedDescription
             NSSound.beep()
             return false
         }
 
+        // Flush and tear down any field editor tied to the outgoing document
+        // before resetting bindings. Otherwise a later export could let that
+        // stale canvas publish its annotations into the replacement document.
+        CaptureEditingSession.commitPendingTextEdits()
+        invalidateDocumentActivities()
         document = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: Date())
         resetAnnotations()
         ocrText = ""
@@ -464,8 +647,66 @@ final class CaptureLabViewModel: ObservableObject {
         annotationUndoStack.removeAll()
     }
 
+    private func invalidateDocumentActivities() {
+        documentGeneration &+= 1
+        cancelTextRecognition()
+        cancelUpload()
+    }
+
+    private func cancelTextRecognition() {
+        ocrRequestID = nil
+        ocrTask?.cancel()
+        ocrTask = nil
+        isRecognizingText = false
+    }
+
+    private func cancelUpload() {
+        uploadRequestID = nil
+        uploadTask?.cancel()
+        uploadTask = nil
+        isUploading = false
+    }
+
+    static func defaultCaptureOperation(_ mode: CaptureMode) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            try ScreenCaptureService().captureFile(mode: mode)
+        }.value
+    }
+
+    static func defaultTextRecognitionOperation(_ image: CGImage) async throws -> OCRResult {
+        try await Task.detached(priority: .userInitiated) {
+            try TextRecognitionService().recognizeText(in: image)
+        }.value
+    }
+
+    static func defaultUploadOperation(_ request: CloudflareR2UploadRequest) async throws -> CloudflareR2UploadResult {
+        try await CloudflareR2UploadService().upload(request)
+    }
+
+    static func defaultImageRenderingOperation(
+        _ image: NSImage,
+        _ annotations: [CaptureAnnotation]
+    ) -> NSImage? {
+        image.renderedWithCaptureLabAnnotations(annotations)
+    }
+
+    static func defaultPNGDataRenderingOperation(
+        _ image: NSImage,
+        _ annotations: [CaptureAnnotation]
+    ) -> Data? {
+        image.captureLabPNGData(annotations: annotations)
+    }
+
+    static func defaultSaveDestinationOperation(suggestedFileName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = L10n.saveCaptureTitle
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = suggestedFileName
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.1"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.2"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {
@@ -490,7 +731,11 @@ final class CaptureLabViewModel: ObservableObject {
                 statusMessage = L10n.downloadingUpdate(latestVersion)
                 let dmgURL = try await updateCheckService.downloadUpdate(package, latestVersion: latestVersion)
                 statusMessage = L10n.installingUpdate
-                try updateInstallService.installAndRelaunch(dmgURL: dmgURL)
+                try updateInstallService.installAndRelaunch(
+                    dmgURL: dmgURL,
+                    expectedVersion: latestVersion,
+                    expectedArchitecture: package.architecture
+                )
                 NSApp.terminate(nil)
             }
         case .upToDate(let currentVersion, _):

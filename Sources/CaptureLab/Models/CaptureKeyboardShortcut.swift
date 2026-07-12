@@ -24,9 +24,12 @@ struct CaptureKeyboardShortcut: Codable, Equatable {
     }
 
     var isValid: Bool {
+        let supportedModifiers: EventModifiers = [.command, .shift, .option, .control]
         guard key.count == 1,
               let scalar = key.unicodeScalars.first,
-              !CharacterSet.controlCharacters.contains(scalar)
+              !CharacterSet.controlCharacters.contains(scalar),
+              carbonKeyCode != nil,
+              modifiers.isSubset(of: supportedModifiers)
         else {
             return false
         }

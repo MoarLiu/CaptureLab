@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 enum CaptureHistoryError: LocalizedError {
@@ -21,6 +22,7 @@ enum CaptureHistoryError: LocalizedError {
 @MainActor
 final class CaptureHistoryStore: ObservableObject {
     static let maxItemCount = 30
+    typealias MetadataWriter = (Data, URL) throws -> Void
 
     @Published private(set) var items: [CaptureHistoryItem]
     @Published private(set) var loadError: CaptureHistoryError?
@@ -32,30 +34,96 @@ final class CaptureHistoryStore: ObservableObject {
 
     private let environment: [String: String]
     private let fileManager: FileManager
+    private let metadataWriter: MetadataWriter
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        metadataWriter: @escaping MetadataWriter = { data, url in
+            try data.write(to: url, options: .atomic)
+        }
     ) {
         self.environment = environment
         self.fileManager = fileManager
+        self.metadataWriter = metadataWriter
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let historyEncoder = encoder
+        let historyDecoder = decoder
+        let historyDirectory = Self.historyDirectory(environment: environment)
+        let metadataURL = Self.metadataURL(environment: environment)
         do {
-            self.items = try Self.loadItems(
-                metadataURL: Self.metadataURL(environment: environment),
-                fileManager: fileManager,
-                decoder: decoder
-            )
-            self.loadError = nil
+            let result = try Self.withExclusiveHistoryLock(
+                historyDirectory: historyDirectory,
+                fileManager: fileManager
+            ) { () -> (items: [CaptureHistoryItem], error: CaptureHistoryError?) in
+                let metadataExists = fileManager.fileExists(atPath: metadataURL.path)
+                do {
+                    let loadedItems: [CaptureHistoryItem]
+                    if metadataExists {
+                        loadedItems = try Self.loadItems(
+                            metadataURL: metadataURL,
+                            fileManager: fileManager,
+                            decoder: historyDecoder
+                        )
+                    } else {
+                        loadedItems = Self.recoverItemsFromDirectory(
+                            historyDirectory: historyDirectory,
+                            fileManager: fileManager
+                        )
+                    }
+                    if !metadataExists, !loadedItems.isEmpty {
+                        let document = MetadataDocument(schemaVersion: 1, items: loadedItems)
+                        try metadataWriter(historyEncoder.encode(document), metadataURL)
+                    }
+                    // A crash can leave a PNG behind after its atomic image write
+                    // but before metadata is committed. Likewise, a previous
+                    // best-effort overflow deletion may have failed. Once the
+                    // metadata snapshot is known to be valid (or has just been
+                    // rebuilt), it is the source of truth and those unreferenced
+                    // screenshots can be reclaimed safely while the cross-process
+                    // history lock is still held.
+                    Self.removeUnreferencedPNGFiles(
+                        retaining: loadedItems,
+                        historyDirectory: historyDirectory,
+                        fileManager: fileManager
+                    )
+                    return (loadedItems, nil)
+                } catch {
+                    let recoveredItems = Self.recoverItemsFromDirectory(
+                        historyDirectory: historyDirectory,
+                        fileManager: fileManager
+                    )
+                    let document = MetadataDocument(schemaVersion: 1, items: recoveredItems)
+                    if let data = try? historyEncoder.encode(document) {
+                        do {
+                            try metadataWriter(data, metadataURL)
+                            Self.removeUnreferencedPNGFiles(
+                                retaining: recoveredItems,
+                                historyDirectory: historyDirectory,
+                                fileManager: fileManager
+                            )
+                        } catch {
+                            // Preserve every recoverable PNG when the replacement
+                            // metadata could not be committed. A later launch can
+                            // retry without turning a metadata failure into data loss.
+                        }
+                    }
+                    return (
+                        recoveredItems,
+                        .metadataLoadFailed(error.localizedDescription)
+                    )
+                }
+            }
+            self.items = result.items
+            self.loadError = result.error
         } catch {
             self.items = Self.recoverItemsFromDirectory(
-                historyDirectory: Self.historyDirectory(environment: environment),
+                historyDirectory: historyDirectory,
                 fileManager: fileManager
             )
             self.loadError = .metadataLoadFailed(error.localizedDescription)
-            try? persist()
         }
     }
 
@@ -72,49 +140,137 @@ final class CaptureHistoryStore: ObservableObject {
             throw CaptureHistoryError.imageDataUnavailable
         }
 
-        try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
-        let id = UUID()
-        let fileName = "capture-\(Self.fileTimestampFormatter.string(from: createdAt))-\(id.uuidString).png"
-        let fileURL = historyDirectory.appendingPathComponent(fileName)
-        try data.write(to: fileURL, options: .atomic)
+        return try withExclusiveHistoryLock {
+            // Another CaptureLab process may have committed history after this
+            // store was initialized. Always merge against the current on-disk
+            // snapshot while holding the cross-process lock instead of letting
+            // stale in-memory state overwrite it.
+            let currentItems = latestItemsFromDisk()
+            let id = UUID()
+            let fileName = "capture-\(Self.fileTimestampFormatter.string(from: createdAt))-\(id.uuidString).png"
+            let fileURL = historyDirectory.appendingPathComponent(fileName)
+            try data.write(to: fileURL, options: .atomic)
 
-        let item = CaptureHistoryItem(
-            id: id,
-            createdAt: createdAt,
-            fileName: fileName,
-            pixelWidth: Int(pixelSize.width),
-            pixelHeight: Int(pixelSize.height)
-        )
-        items.insert(item, at: 0)
-        try trimAndPersist()
-        return item
+            let item = CaptureHistoryItem(
+                id: id,
+                createdAt: createdAt,
+                fileName: fileName,
+                pixelWidth: Int(pixelSize.width),
+                pixelHeight: Int(pixelSize.height)
+            )
+            let allItems = [item] + currentItems.filter { $0.id != item.id }
+            let retainedItems = Array(allItems.prefix(Self.maxItemCount))
+            do {
+                try persist(retainedItems)
+            } catch {
+                // A custom or failing writer can theoretically replace the
+                // metadata file and then report an error. Never remove the new
+                // PNG when the on-disk metadata already references it, or the
+                // rollback itself would create a dangling history entry.
+                if let committedItems = try? Self.loadItems(
+                    metadataURL: metadataURL,
+                    fileManager: fileManager,
+                    decoder: decoder
+                ), committedItems.contains(where: { $0.id == item.id }) {
+                    items = committedItems
+                } else {
+                    try? fileManager.removeItem(at: fileURL)
+                }
+                throw error
+            }
+
+            items = retainedItems
+            Self.removeUnreferencedPNGFiles(
+                retaining: retainedItems,
+                historyDirectory: historyDirectory,
+                fileManager: fileManager
+            )
+            return item
+        }
     }
 
     func url(for item: CaptureHistoryItem) -> URL {
-        historyDirectory.appendingPathComponent(item.fileName)
+        Self.historyFileURL(fileName: item.fileName, historyDirectory: historyDirectory)
+            ?? historyDirectory.appendingPathComponent(".invalid-history-item")
     }
 
     func data(for item: CaptureHistoryItem) throws -> Data {
-        let fileURL = url(for: item)
-        guard fileManager.fileExists(atPath: fileURL.path) else {
+        guard let fileURL = Self.historyFileURL(
+            fileName: item.fileName,
+            historyDirectory: historyDirectory
+        ), Self.isRegularFile(fileURL) else {
             throw CaptureHistoryError.imageNotFound
         }
         return try Data(contentsOf: fileURL)
     }
 
-    private func trimAndPersist() throws {
-        let overflow = Array(items.dropFirst(Self.maxItemCount))
-        items = Array(items.prefix(Self.maxItemCount))
-        for item in overflow {
-            try? fileManager.removeItem(at: url(for: item))
-        }
-        try persist()
-    }
-
-    private func persist() throws {
+    private func persist(_ items: [CaptureHistoryItem]) throws {
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
         let document = MetadataDocument(schemaVersion: 1, items: items)
-        try encoder.encode(document).write(to: metadataURL, options: .atomic)
+        try metadataWriter(encoder.encode(document), metadataURL)
+    }
+
+    private func latestItemsFromDisk() -> [CaptureHistoryItem] {
+        if fileManager.fileExists(atPath: metadataURL.path),
+           let persisted = try? Self.loadItems(
+               metadataURL: metadataURL,
+               fileManager: fileManager,
+               decoder: decoder
+           ) {
+            return persisted
+        }
+        return Self.recoverItemsFromDirectory(
+            historyDirectory: historyDirectory,
+            fileManager: fileManager
+        )
+    }
+
+    private func withExclusiveHistoryLock<T>(_ operation: () throws -> T) throws -> T {
+        try Self.withExclusiveHistoryLock(
+            historyDirectory: historyDirectory,
+            fileManager: fileManager,
+            operation: operation
+        )
+    }
+
+    private static func withExclusiveHistoryLock<T>(
+        historyDirectory: URL,
+        fileManager: FileManager,
+        operation: () throws -> T
+    ) throws -> T {
+        try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+        let lockURL = historyDirectory.appendingPathComponent(".history.lock")
+        let descriptor = lockURL.path.withCString {
+            Darwin.open($0, O_CREAT | O_RDWR, mode_t(0o600))
+        }
+        guard descriptor >= 0 else {
+            throw Self.posixError(code: errno, operation: "open history lock")
+        }
+        defer { Darwin.close(descriptor) }
+
+        var lock = Darwin.flock()
+        lock.l_type = Int16(F_WRLCK)
+        lock.l_whence = Int16(SEEK_SET)
+        while Darwin.fcntl(descriptor, F_SETLKW, &lock) != 0 {
+            let code = errno
+            if code == EINTR {
+                continue
+            }
+            throw Self.posixError(code: code, operation: "lock history")
+        }
+        defer {
+            lock.l_type = Int16(F_UNLCK)
+            _ = Darwin.fcntl(descriptor, F_SETLK, &lock)
+        }
+        return try operation()
+    }
+
+    private static func posixError(code: Int32, operation: String) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: "Could not \(operation): \(String(cString: strerror(code)))"]
+        )
     }
 
     private static func loadItems(
@@ -122,13 +278,23 @@ final class CaptureHistoryStore: ObservableObject {
         fileManager: FileManager,
         decoder: JSONDecoder
     ) throws -> [CaptureHistoryItem] {
-        guard fileManager.fileExists(atPath: metadataURL.path) else {
-            return []
-        }
         let document = try decoder.decode(MetadataDocument.self, from: Data(contentsOf: metadataURL))
-        return document.items.filter { item in
-            fileManager.fileExists(atPath: metadataURL.deletingLastPathComponent().appendingPathComponent(item.fileName).path)
+        let historyDirectory = metadataURL.deletingLastPathComponent()
+        var seenIDs = Set<UUID>()
+        var seenFileNames = Set<String>()
+        return document.items.compactMap { item in
+            guard let fileURL = historyFileURL(
+                      fileName: item.fileName,
+                      historyDirectory: historyDirectory
+                  ), isRegularFile(fileURL),
+                  seenIDs.insert(item.id).inserted,
+                  seenFileNames.insert(item.fileName).inserted else {
+                return nil
+            }
+            return item
         }
+        .prefix(maxItemCount)
+        .map { $0 }
     }
 
     private static func recoverItemsFromDirectory(
@@ -144,7 +310,10 @@ final class CaptureHistoryStore: ObservableObject {
         }
 
         return urls
-            .filter { $0.pathExtension.lowercased() == "png" }
+            .filter {
+                $0.pathExtension.lowercased() == "png"
+                    && Self.isRegularFile($0)
+            }
             .compactMap { url in
                 let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
                 let createdAt = values?.creationDate ?? values?.contentModificationDate ?? Date.distantPast
@@ -161,6 +330,56 @@ final class CaptureHistoryStore: ObservableObject {
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(Self.maxItemCount)
             .map { $0 }
+    }
+
+    private static func removeUnreferencedPNGFiles(
+        retaining items: [CaptureHistoryItem],
+        historyDirectory: URL,
+        fileManager: FileManager
+    ) {
+        let retainedFileNames = Set(items.map(\.fileName))
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: historyDirectory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return
+        }
+
+        for url in urls where url.pathExtension.lowercased() == "png" {
+            guard !retainedFileNames.contains(url.lastPathComponent),
+                  isRegularFile(url) else {
+                continue
+            }
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
+    private static func historyFileURL(fileName: String, historyDirectory: URL) -> URL? {
+        guard !fileName.isEmpty,
+              fileName != ".",
+              fileName != "..",
+              !fileName.contains("/"),
+              !fileName.contains("\0"),
+              URL(fileURLWithPath: fileName).pathExtension.lowercased() == "png" else {
+            return nil
+        }
+
+        let standardizedDirectory = historyDirectory.standardizedFileURL
+        let candidate = standardizedDirectory
+            .appendingPathComponent(fileName, isDirectory: false)
+            .standardizedFileURL
+        guard candidate.deletingLastPathComponent() == standardizedDirectory else {
+            return nil
+        }
+        return candidate
+    }
+
+    private static func isRegularFile(_ url: URL) -> Bool {
+        var fileStatus = stat()
+        guard url.path.withCString({ Darwin.lstat($0, &fileStatus) }) == 0 else {
+            return false
+        }
+        return (fileStatus.st_mode & S_IFMT) == S_IFREG
     }
 
     private static func recoveredID(from fileName: String) -> UUID? {

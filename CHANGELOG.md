@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.2 - 2026-07-12
+
+- Fixed Mosaic rendering for indexed, CMYK, and transparent images, with an
+  opaque fail-closed fallback and bounded preview caching.
+- Preserved source pixel dimensions and consistent annotation styling across
+  preview zoom levels and exported images.
+- Committed active text edits before copy, save, upload, Done, Undo, Clear,
+  zoom rebuild, and editor teardown; Save As now freezes one rendered PNG
+  before its modal panel opens.
+- Prevented stale OCR and upload completions from mutating a replacement or
+  finished document.
+- Hid CaptureLab windows during capture, tightened screenshot error
+  classification, and isolated temporary captures per process with safe stale
+  workspace recovery and child-process termination on exit.
+- Made history writes and global shortcut replacement failure-safe across
+  concurrent app instances, and reclaimed orphaned or overflow history images.
+- Moved R2 secrets to Keychain, require HTTPS endpoints, and made settings plus
+  secret updates a cross-process rollback-safe transaction.
+- Added signed update assets, streaming download/hash verification, package
+  identity checks, strict code-signature checks, serialized installs, and
+  atomic install/rollback.
+- Hardened local build and packaging verification, including stable cross-build
+  local signing, fail-closed release asset publication, architecture checks,
+  and expanded regression tests.
+
+Artifacts:
+
+- `CaptureLab-0.4.2-macos-arm64.dmg`
+- SHA-256: `a481bf6dfd29a667c6752cd54c925a3668f052b36e9e495c149c486a927e4dab`
+- `CaptureLab-0.4.2-macos-arm64.dmg.sha256`
+- `CaptureLab-0.4.2-macos-arm64.dmg.sig`
+- `CaptureLab-0.4.2-macos-x86_64.dmg`
+- SHA-256: `6a90d306471bbb504052fc2200a03a1a52c5e555fb9521d2f3e3e16238f8742d`
+- `CaptureLab-0.4.2-macos-x86_64.dmg.sha256`
+- `CaptureLab-0.4.2-macos-x86_64.dmg.sig`
+
+Known release note:
+
+- The app uses a stable local self-signed certificate rather than Apple
+  Developer ID and is not notarized, so macOS may require manual approval on
+  first launch.
+
 ## 0.4.1 - 2026-07-04
 
 - Fixed Done so finishing an edit copies the rendered image, clears the active document, and prevents the previous image from reopening from the Dock.

@@ -49,6 +49,7 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
         coordinator.detach()
     }
 
+    @MainActor
     final class Coordinator {
         private weak var view: NSView?
         private var monitor: Any?
@@ -60,16 +61,24 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
             }
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self,
-                      let window = self.view?.window,
-                      event.window === window,
-                      CaptureLabCloseShortcut.matches(event)
-                else {
-                    return event
-                }
+                let eventWindowID = event.window.map(ObjectIdentifier.init)
+                let matchesCloseShortcut = CaptureLabCloseShortcut.matches(event)
+                // AppKit invokes local event monitors on the application thread.
+                // State that contract explicitly so Swift 6 can preserve the
+                // synchronous close-and-consume behavior without actor leakage.
+                let didClose = MainActor.assumeIsolated { () -> Bool in
+                    guard let self,
+                          let window = self.view?.window,
+                          eventWindowID == ObjectIdentifier(window),
+                          matchesCloseShortcut
+                    else {
+                        return false
+                    }
 
-                window.close()
-                return nil
+                    window.close()
+                    return true
+                }
+                return didClose ? nil : event
             }
         }
 
@@ -78,10 +87,6 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
                 NSEvent.removeMonitor(monitor)
             }
             monitor = nil
-        }
-
-        deinit {
-            detach()
         }
     }
 }

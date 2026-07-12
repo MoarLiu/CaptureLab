@@ -12,16 +12,23 @@ final class CaptureShortcutStore: ObservableObject {
         self.captureShortcut = Self.loadCaptureShortcut(from: defaults, key: storageKey)
     }
 
-    func saveCaptureShortcut(_ shortcut: CaptureKeyboardShortcut) {
+    @discardableResult
+    func saveCaptureShortcut(
+        _ shortcut: CaptureKeyboardShortcut,
+        afterRegistering register: () -> Bool = { true }
+    ) -> Bool {
         guard shortcut.isValid else {
-            return
+            return false
         }
-
+        guard let data = try? JSONEncoder().encode(shortcut) else {
+            return false
+        }
+        guard register() else {
+            return false
+        }
+        defaults.set(data, forKey: storageKey)
         captureShortcut = shortcut
-
-        if let data = try? JSONEncoder().encode(shortcut) {
-            defaults.set(data, forKey: storageKey)
-        }
+        return true
     }
 
     private static func loadCaptureShortcut(from defaults: UserDefaults, key: String) -> CaptureKeyboardShortcut {

@@ -3,12 +3,16 @@ import SwiftUI
 
 struct ShortcutSettingsView: View {
     @ObservedObject var shortcutStore: CaptureShortcutStore
-    let onSave: () -> Void
+    let onSave: (CaptureKeyboardShortcut) -> String?
     @Environment(\.dismiss) private var dismiss
     @State private var draftShortcut: CaptureKeyboardShortcut
+    @State private var saveError: String?
     @State private var window: NSWindow?
 
-    init(shortcutStore: CaptureShortcutStore, onSave: @escaping () -> Void = {}) {
+    init(
+        shortcutStore: CaptureShortcutStore,
+        onSave: @escaping (CaptureKeyboardShortcut) -> String? = { _ in nil }
+    ) {
         self.shortcutStore = shortcutStore
         self.onSave = onSave
         _draftShortcut = State(initialValue: shortcutStore.captureShortcut)
@@ -44,6 +48,13 @@ struct ShortcutSettingsView: View {
                 Text(L10n.shortcutHelp)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+
+                if let saveError {
+                    Text(saveError)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             HStack {
@@ -55,8 +66,24 @@ struct ShortcutSettingsView: View {
                 .keyboardShortcut(.cancelAction)
 
                 Button(L10n.save) {
-                    shortcutStore.saveCaptureShortcut(draftShortcut)
-                    onSave()
+                    let didSave = shortcutStore.saveCaptureShortcut(
+                        draftShortcut,
+                        afterRegistering: {
+                            if let error = onSave(draftShortcut) {
+                                saveError = error
+                                return false
+                            }
+                            return true
+                        }
+                    )
+                    guard didSave else {
+                        if saveError != nil {
+                            return
+                        }
+                        saveError = L10n.globalShortcutUnsupported(draftShortcut.displayTitle)
+                        return
+                    }
+                    saveError = nil
                     close()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -68,6 +95,7 @@ struct ShortcutSettingsView: View {
         .background(ShortcutSettingsWindowReader(window: $window))
         .onAppear {
             draftShortcut = shortcutStore.captureShortcut
+            saveError = nil
         }
         .captureLabWindowCloseShortcuts()
     }

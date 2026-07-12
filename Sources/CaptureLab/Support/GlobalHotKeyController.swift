@@ -3,52 +3,99 @@ import Foundation
 
 @MainActor
 final class GlobalHotKeyController: ObservableObject {
+    typealias RegisterOperation = (
+        UInt32,
+        UInt32,
+        EventHotKeyID,
+        inout EventHotKeyRef?
+    ) -> OSStatus
+    typealias UnregisterOperation = (EventHotKeyRef) -> OSStatus
+
     @Published private(set) var registrationError: String?
+    private(set) var registeredShortcut: CaptureKeyboardShortcut?
 
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
     private var action: (() -> Void)?
+    private var nextHotKeyID: UInt32 = 1
+    private let registerOperation: RegisterOperation
+    private let unregisterOperation: UnregisterOperation
+    private let installEventHandlerOverride: (() -> OSStatus)?
 
-    func configure(shortcut: CaptureKeyboardShortcut, action: @escaping () -> Void) {
-        self.action = action
-        register(shortcut)
+    init(
+        registerOperation: @escaping RegisterOperation = { keyCode, modifiers, hotKeyID, hotKeyRef in
+            RegisterEventHotKey(
+                keyCode,
+                modifiers,
+                hotKeyID,
+                GetApplicationEventTarget(),
+                0,
+                &hotKeyRef
+            )
+        },
+        unregisterOperation: @escaping UnregisterOperation = { UnregisterEventHotKey($0) },
+        installEventHandlerOverride: (() -> OSStatus)? = nil
+    ) {
+        self.registerOperation = registerOperation
+        self.unregisterOperation = unregisterOperation
+        self.installEventHandlerOverride = installEventHandlerOverride
     }
 
-    private func register(_ shortcut: CaptureKeyboardShortcut) {
-        unregisterHotKey()
+    @discardableResult
+    func configure(shortcut: CaptureKeyboardShortcut, action: @escaping () -> Void) -> Bool {
+        if shortcut == registeredShortcut, hotKeyRef != nil {
+            self.action = action
+            registrationError = nil
+            return true
+        }
 
-        guard let keyCode = shortcut.carbonKeyCode else {
+        guard shortcut.isValid, let keyCode = shortcut.carbonKeyCode else {
             registrationError = L10n.globalShortcutUnsupported(shortcut.displayTitle)
-            return
+            return false
         }
 
         let handlerStatus = installEventHandlerIfNeeded()
         guard handlerStatus == noErr else {
             registrationError = L10n.globalShortcutHandlerInstallFailed
-            return
+            return false
         }
 
         let hotKeyID = EventHotKeyID(
             signature: GlobalHotKeyController.hotKeySignature,
-            id: 1
+            id: nextHotKeyID
         )
         var newHotKeyRef: EventHotKeyRef?
-        let status = RegisterEventHotKey(
+        let status = registerOperation(
             keyCode,
             shortcut.carbonModifiers,
             hotKeyID,
-            GetApplicationEventTarget(),
-            0,
             &newHotKeyRef
         )
 
         guard status == noErr, let newHotKeyRef else {
+            if let newHotKeyRef {
+                _ = unregisterOperation(newHotKeyRef)
+            }
             registrationError = L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
-            return
+            return false
         }
 
+        // Keep the old hot key alive until the replacement is known to be
+        // registered. A conflicting/unsupported replacement therefore cannot
+        // leave the app without its previous working shortcut.
+        if let oldHotKeyRef = hotKeyRef {
+            guard unregisterOperation(oldHotKeyRef) == noErr else {
+                _ = unregisterOperation(newHotKeyRef)
+                registrationError = L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
+                return false
+            }
+        }
         hotKeyRef = newHotKeyRef
+        registeredShortcut = shortcut
+        self.action = action
+        nextHotKeyID &+= 1
         registrationError = nil
+        return true
     }
 
     private func unregister() {
@@ -61,14 +108,19 @@ final class GlobalHotKeyController: ObservableObject {
 
     private func unregisterHotKey() {
         if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
+            _ = unregisterOperation(hotKeyRef)
             self.hotKeyRef = nil
+            registeredShortcut = nil
         }
     }
 
     private func installEventHandlerIfNeeded() -> OSStatus {
         guard eventHandlerRef == nil else {
             return noErr
+        }
+
+        if let installEventHandlerOverride {
+            return installEventHandlerOverride()
         }
 
         var eventType = EventTypeSpec(

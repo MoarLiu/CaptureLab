@@ -6,6 +6,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
     @Binding var annotations: [CaptureAnnotation]
     @Binding var selectedTool: CaptureTool
     @Binding var zoomLevel: CaptureZoomLevel
+    var editingSession: CaptureEditingSession = .shared
 
     func makeCoordinator() -> Coordinator {
         Coordinator(annotations: $annotations)
@@ -17,6 +18,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         view.annotations = annotations
         view.selectedTool = selectedTool
         view.zoomLevel = zoomLevel
+        view.setEditingSession(editingSession)
         view.onAnnotationsChanged = { [coordinator = context.coordinator] updated in
             coordinator.annotations.wrappedValue = updated
         }
@@ -28,12 +30,23 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         nsView.setDocument(document)
         nsView.annotations = annotations
         nsView.zoomLevel = zoomLevel
+        nsView.setEditingSession(editingSession)
         if nsView.selectedTool != selectedTool {
             nsView.selectedTool = selectedTool
         }
         nsView.onAnnotationsChanged = { [coordinator = context.coordinator] updated in
             coordinator.annotations.wrappedValue = updated
         }
+    }
+
+    static func dismantleNSView(
+        _ nsView: CaptureAnnotationNSCanvasView,
+        coordinator: Coordinator
+    ) {
+        // Switching between fit and fixed zoom changes the SwiftUI hierarchy
+        // around this representable. Flush the field editor before SwiftUI tears
+        // down the old AppKit view, then release its shared-session callback.
+        nsView.prepareForDismantle()
     }
 
     final class Coordinator {
@@ -49,7 +62,10 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     private(set) var document: CaptureDocument?
 
     var annotations: [CaptureAnnotation] = [] {
-        didSet { needsDisplay = true }
+        didSet {
+            pruneMosaicCache()
+            needsDisplay = true
+        }
     }
 
     var selectedTool: CaptureTool = .select {
@@ -80,9 +96,34 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     private var interaction: Interaction?
     private var activeTextField: NSTextField?
     private var editingTextAnnotationID: UUID?
+    private var editingSession: CaptureEditingSession?
+    private var mosaicCache: [UUID: MosaicCacheEntry] = [:]
+    private var mosaicCachePixelCost = 0
+
+    private let maximumMosaicCacheEntries = 32
+    private let maximumMosaicCachePixelCost = 16_000_000
+    private let maximumMosaicPreviewPixelCost = 4_000_000
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+
+    func setEditingSession(_ session: CaptureEditingSession) {
+        guard editingSession !== session else {
+            return
+        }
+        editingSession?.unregisterPendingTextCommitter(owner: self)
+        editingSession = session
+        session.registerPendingTextCommitter(owner: self) { [weak self] in
+            self?.commitActiveTextEdit()
+        }
+    }
+
+    func prepareForDismantle() {
+        commitActiveTextEdit()
+        editingSession?.unregisterPendingTextCommitter(owner: self)
+        editingSession = nil
+        onAnnotationsChanged = nil
+    }
 
     func setDocument(_ document: CaptureDocument) {
         let signature = Self.signature(for: document)
@@ -90,6 +131,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             discardActiveTextEdit()
             selectedAnnotationID = nil
             interaction = nil
+            clearMosaicCache()
             documentSignature = signature
         }
         self.document = document
@@ -497,49 +539,69 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         isDraft: Bool = false
     ) {
         let alpha: CGFloat = isDraft ? 0.68 : 1
+        let style = annotationStyle(for: document, imageRect: imageRect)
         switch annotation.kind {
         case .arrow:
-            drawArrow(points: annotation.points(in: imageRect), alpha: alpha)
+            drawArrow(points: annotation.points(in: imageRect), style: style, alpha: alpha)
         case .line:
-            drawLine(points: annotation.points(in: imageRect), alpha: alpha)
+            drawLine(points: annotation.points(in: imageRect), style: style, alpha: alpha)
         case .brush:
-            drawBrush(points: annotation.points(in: imageRect), alpha: alpha)
+            drawBrush(points: annotation.points(in: imageRect), style: style, alpha: alpha)
         case .rectangle:
             let rect = annotation.rect(in: imageRect)
             NSColor.systemRed.withAlphaComponent(alpha).setStroke()
             let path = NSBezierPath(rect: rect)
-            path.lineWidth = 3
+            path.lineWidth = style.lineWidth
             path.stroke()
         case .counter:
-            drawCounter(annotation, imageRect: imageRect, alpha: alpha)
+            drawCounter(annotation, imageRect: imageRect, style: style, alpha: alpha)
         case .text:
-            drawText(annotation, imageRect: imageRect, alpha: alpha)
+            drawText(annotation, imageRect: imageRect, style: style, alpha: alpha)
         case .highlight:
-            drawHighlight(annotation, imageRect: imageRect, alpha: alpha)
+            drawHighlight(annotation, imageRect: imageRect, style: style, alpha: alpha)
         case .mosaic:
             let rect = annotation.rect(in: imageRect)
-            drawPixelatedRegion(annotation: annotation, rect: rect, document: document, alpha: alpha)
+            drawPixelatedRegion(
+                annotation: annotation,
+                rect: rect,
+                document: document,
+                shouldCache: !isDraft
+            )
         }
     }
 
-    private func drawText(_ annotation: CaptureAnnotation, imageRect: CGRect, alpha: CGFloat) {
+    private func drawText(
+        _ annotation: CaptureAnnotation,
+        imageRect: CGRect,
+        style: CaptureAnnotationStyle,
+        alpha: CGFloat
+    ) {
         let rect = annotation.rect(in: imageRect)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
-        let fontSize = max(13, min(32, rect.height * 0.42))
+        paragraph.lineBreakMode = .byTruncatingTail
+        let fontSize = style.textFontSize(for: rect)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
             .foregroundColor: NSColor.systemRed.withAlphaComponent(alpha),
             .paragraphStyle: paragraph
         ]
-        let text = annotation.text.isEmpty ? "Text" : annotation.text
-        let textRect = rect.insetBy(dx: 2, dy: max(0, (rect.height - fontSize * 1.25) / 2))
+        let text = annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text
+        let textRect = rect.insetBy(
+            dx: style.textInset,
+            dy: max(0, (rect.height - fontSize * 1.25) / 2)
+        )
         (text as NSString).draw(in: textRect, withAttributes: attributes)
     }
 
-    private func drawCounter(_ annotation: CaptureAnnotation, imageRect: CGRect, alpha: CGFloat) {
-        let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 24, height: 24)
-        let diameter = min(rect.width, rect.height)
+    private func drawCounter(
+        _ annotation: CaptureAnnotation,
+        imageRect: CGRect,
+        style: CaptureAnnotationStyle,
+        alpha: CGFloat
+    ) {
+        let rect = annotation.rect(in: imageRect)
+        let diameter = max(style.minimumCounterDiameter, min(rect.width, rect.height))
         let circleRect = CGRect(
             x: rect.midX - diameter / 2,
             y: rect.midY - diameter / 2,
@@ -551,7 +613,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         NSBezierPath(ovalIn: circleRect).fill()
 
         let value = annotation.text.isEmpty ? "1" : annotation.text
-        let fontSize = max(12, diameter * 0.48)
+        let fontSize = style.counterFontSize(for: diameter)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
@@ -569,10 +631,19 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         (value as NSString).draw(in: textRect, withAttributes: attributes)
     }
 
-    private func drawHighlight(_ annotation: CaptureAnnotation, imageRect: CGRect, alpha: CGFloat) {
+    private func drawHighlight(
+        _ annotation: CaptureAnnotation,
+        imageRect: CGRect,
+        style: CaptureAnnotationStyle,
+        alpha: CGFloat
+    ) {
         let rect = annotation.rect(in: imageRect)
         NSColor.systemYellow.withAlphaComponent(0.42 * alpha).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+        NSBezierPath(
+            roundedRect: rect,
+            xRadius: style.highlightCornerRadius,
+            yRadius: style.highlightCornerRadius
+        ).fill()
     }
 
     private func beginEditingText(annotationID: UUID) {
@@ -586,10 +657,15 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         discardActiveTextEdit()
 
         let imageRect = imageDisplayRect(for: document.image.size)
+        let style = annotationStyle(for: document, imageRect: imageRect)
+        let annotationRect = annotation.rect(in: imageRect)
         let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 120, height: 34)
         let field = NSTextField(frame: rect)
-        field.stringValue = annotation.text.isEmpty ? "Text" : annotation.text
-        field.font = NSFont.systemFont(ofSize: max(13, min(32, rect.height * 0.42)), weight: .semibold)
+        field.stringValue = annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text
+        field.font = NSFont.systemFont(
+            ofSize: style.textFontSize(for: annotationRect),
+            weight: .semibold
+        )
         field.textColor = .systemRed
         field.alignment = .center
         field.isBordered = false
@@ -620,8 +696,13 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             return
         }
 
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingValue = field.currentEditor()?.string ?? field.stringValue
+        let text = pendingValue.trimmingCharacters(in: .whitespacesAndNewlines)
         field.delegate = nil
+        if let fieldEditor = field.currentEditor(),
+           window?.firstResponder === fieldEditor {
+            window?.makeFirstResponder(self)
+        }
         field.removeFromSuperview()
         activeTextField = nil
         editingTextAnnotationID = nil
@@ -649,7 +730,11 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         commitActiveTextEdit()
     }
 
-    private func drawArrow(points: [CGPoint], alpha: CGFloat) {
+    private func drawArrow(
+        points: [CGPoint],
+        style: CaptureAnnotationStyle,
+        alpha: CGFloat
+    ) {
         guard points.count >= 2 else {
             return
         }
@@ -658,20 +743,18 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let path = NSBezierPath()
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        path.lineWidth = 3
+        path.lineWidth = style.lineWidth
         path.move(to: start)
         path.line(to: end)
 
         let angle = atan2(end.y - start.y, end.x - start.x)
-        let headLength: CGFloat = 14
-        let headAngle: CGFloat = .pi / 7
         let left = CGPoint(
-            x: end.x - headLength * cos(angle - headAngle),
-            y: end.y - headLength * sin(angle - headAngle)
+            x: end.x - style.arrowHeadLength * cos(angle - style.arrowHeadAngle),
+            y: end.y - style.arrowHeadLength * sin(angle - style.arrowHeadAngle)
         )
         let right = CGPoint(
-            x: end.x - headLength * cos(angle + headAngle),
-            y: end.y - headLength * sin(angle + headAngle)
+            x: end.x - style.arrowHeadLength * cos(angle + style.arrowHeadAngle),
+            y: end.y - style.arrowHeadLength * sin(angle + style.arrowHeadAngle)
         )
         path.move(to: left)
         path.line(to: end)
@@ -681,14 +764,18 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         path.stroke()
     }
 
-    private func drawLine(points: [CGPoint], alpha: CGFloat) {
+    private func drawLine(
+        points: [CGPoint],
+        style: CaptureAnnotationStyle,
+        alpha: CGFloat
+    ) {
         guard points.count >= 2 else {
             return
         }
         let path = NSBezierPath()
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        path.lineWidth = 3
+        path.lineWidth = style.lineWidth
         path.move(to: points[0])
         path.line(to: points[1])
 
@@ -696,14 +783,18 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         path.stroke()
     }
 
-    private func drawBrush(points: [CGPoint], alpha: CGFloat) {
+    private func drawBrush(
+        points: [CGPoint],
+        style: CaptureAnnotationStyle,
+        alpha: CGFloat
+    ) {
         guard let first = points.first, points.count >= 2 else {
             return
         }
         let path = NSBezierPath()
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        path.lineWidth = 4
+        path.lineWidth = style.brushWidth
         path.move(to: first)
         for point in points.dropFirst() {
             path.line(to: point)
@@ -716,10 +807,14 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         annotation: CaptureAnnotation,
         rect: CGRect,
         document: CaptureDocument,
-        alpha: CGFloat
+        shouldCache: Bool
     ) {
-        guard let pixelated = pixelatedImage(for: annotation, document: document) else {
-            NSColor.black.withAlphaComponent(0.3 * alpha).setFill()
+        guard let pixelated = pixelatedImage(
+            for: annotation,
+            document: document,
+            shouldCache: shouldCache
+        ) else {
+            NSColor.black.setFill()
             NSBezierPath(rect: rect).fill()
             return
         }
@@ -727,7 +822,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             in: rect,
             from: NSRect(origin: .zero, size: pixelated.size),
             operation: .sourceOver,
-            fraction: alpha,
+            fraction: CaptureAnnotationStyle.mosaicOpacity,
             respectFlipped: true,
             hints: nil
         )
@@ -770,19 +865,163 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         path.stroke()
     }
 
-    private func pixelatedImage(for annotation: CaptureAnnotation, document: CaptureDocument) -> NSImage? {
+    /// Test-visible entry point for proving that static mosaics reuse the same
+    /// rendered region instead of rebuilding it on every AppKit redraw.
+    func cachedPixelatedImage(for annotation: CaptureAnnotation) -> NSImage? {
+        guard let document else {
+            return nil
+        }
+        return pixelatedImage(for: annotation, document: document, shouldCache: true)
+    }
+
+    var mosaicCacheEntryCount: Int {
+        mosaicCache.count
+    }
+
+    var mosaicCacheCostInPixels: Int {
+        mosaicCachePixelCost
+    }
+
+    private func pixelatedImage(
+        for annotation: CaptureAnnotation,
+        document: CaptureDocument,
+        shouldCache: Bool
+    ) -> NSImage? {
         guard annotation.normalizedRect.width > 0,
-              annotation.normalizedRect.height > 0,
-              let source = document.image.captureLabCGImage()
+              annotation.normalizedRect.height > 0
         else {
             return nil
         }
 
-        guard let output = CapturePixelation.pixelatedImage(from: source, normalizedRect: annotation.normalizedRect) else {
+        let previewPixelSize = mosaicPreviewPixelSize(for: annotation, document: document)
+
+        if shouldCache,
+           let cached = mosaicCache[annotation.id],
+           cached.documentSignature == documentSignature,
+           cached.imageIdentity == ObjectIdentifier(document.image),
+           cached.normalizedRect == annotation.normalizedRect,
+           cached.previewPixelSize == previewPixelSize {
+            return cached.image
+        }
+
+        guard let source = document.image.captureLabCGImage() else {
             return nil
         }
 
-        return NSImage(cgImage: output, size: annotation.rect(in: imageDisplayRect(for: document.image.size)).size)
+        guard let output = CapturePixelation.previewPixelatedImage(
+            from: source,
+            normalizedRect: annotation.normalizedRect,
+            outputPixelSize: previewPixelSize
+        ) else {
+            return nil
+        }
+
+        let image = NSImage(
+            cgImage: output,
+            size: CGSize(width: output.width, height: output.height)
+        )
+        if shouldCache {
+            storeMosaicCacheEntry(
+                MosaicCacheEntry(
+                    documentSignature: documentSignature,
+                    imageIdentity: ObjectIdentifier(document.image),
+                    normalizedRect: annotation.normalizedRect,
+                    previewPixelSize: previewPixelSize,
+                    image: image,
+                    pixelCost: output.width * output.height
+                ),
+                for: annotation.id
+            )
+        }
+        return image
+    }
+
+    private func storeMosaicCacheEntry(_ entry: MosaicCacheEntry, for id: UUID) {
+        // Free a stale same-ID entry before considering its replacement. When
+        // the cache is full, preserve the resident set instead of evicting it
+        // during every sequential draw pass (classic LRU scan thrashing).
+        removeMosaicCacheEntry(id)
+        guard entry.pixelCost <= maximumMosaicCachePixelCost,
+              mosaicCache.count < maximumMosaicCacheEntries,
+              mosaicCachePixelCost <= maximumMosaicCachePixelCost - entry.pixelCost
+        else {
+            return
+        }
+
+        mosaicCache[id] = entry
+        mosaicCachePixelCost += entry.pixelCost
+    }
+
+    private func removeMosaicCacheEntry(_ id: UUID) {
+        if let removed = mosaicCache.removeValue(forKey: id) {
+            mosaicCachePixelCost -= removed.pixelCost
+        }
+    }
+
+    private func pruneMosaicCache() {
+        let liveMosaicIDs = Set(
+            annotations.lazy
+                .filter { $0.kind == .mosaic }
+                .map(\.id)
+        )
+        for id in Array(mosaicCache.keys) where !liveMosaicIDs.contains(id) {
+            removeMosaicCacheEntry(id)
+        }
+    }
+
+    private func clearMosaicCache() {
+        mosaicCache.removeAll(keepingCapacity: true)
+        mosaicCachePixelCost = 0
+    }
+
+    private func mosaicPreviewPixelSize(
+        for annotation: CaptureAnnotation,
+        document: CaptureDocument
+    ) -> CGSize {
+        let sourcePixelSize = document.pixelSize
+        let sourceCrop = CapturePixelation.cropRect(
+            for: annotation.normalizedRect,
+            pixelSize: sourcePixelSize
+        )
+        let displayRect = annotation.rect(in: imageDisplayRect(for: document.image.size))
+        let backingScale = max(window?.backingScaleFactor ?? 1, 1)
+        var width = max(
+            1,
+            min(Int(sourceCrop.width), Int((displayRect.width * backingScale).rounded(.up)))
+        )
+        var height = max(
+            1,
+            min(Int(sourceCrop.height), Int((displayRect.height * backingScale).rounded(.up)))
+        )
+
+        let pixelCost = width * height
+        if pixelCost > maximumMosaicPreviewPixelCost {
+            let scale = sqrt(CGFloat(maximumMosaicPreviewPixelCost) / CGFloat(pixelCost))
+            width = max(1, Int((CGFloat(width) * scale).rounded(.down)))
+            height = max(1, Int((CGFloat(height) * scale).rounded(.down)))
+
+            // Floating-point rounding should already put the result below the
+            // limit. This final adjustment makes the memory invariant exact.
+            while width * height > maximumMosaicPreviewPixelCost {
+                if width >= height {
+                    width -= 1
+                } else {
+                    height -= 1
+                }
+            }
+        }
+
+        return CGSize(width: width, height: height)
+    }
+
+    private func annotationStyle(
+        for document: CaptureDocument,
+        imageRect: CGRect
+    ) -> CaptureAnnotationStyle {
+        CaptureAnnotationStyle(
+            sourcePixelSize: document.pixelSize,
+            renderedImageSize: imageRect.size
+        )
     }
 
     private func resizedNormalizedRect(
@@ -920,6 +1159,15 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
 private struct HandleHit {
     let interaction: Interaction
+}
+
+private struct MosaicCacheEntry {
+    let documentSignature: String?
+    let imageIdentity: ObjectIdentifier
+    let normalizedRect: CGRect
+    let previewPixelSize: CGSize
+    let image: NSImage
+    let pixelCost: Int
 }
 
 private enum Interaction {

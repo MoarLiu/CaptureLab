@@ -24,10 +24,43 @@ enum CaptureLabError: LocalizedError {
 }
 
 struct ScreenCaptureService {
+    struct ProcessResult: Equatable, Sendable {
+        var terminationStatus: Int32
+        var standardError: String
+    }
+
+    typealias ProcessRunner = (URL, [String]) throws -> ProcessResult
+
+    private let executableURL: URL
+    private let temporaryDirectory: URL?
+    private let fileManager: FileManager
+    private let processRunner: ProcessRunner
+
+    init(
+        executableURL: URL = URL(fileURLWithPath: "/usr/sbin/screencapture"),
+        temporaryDirectory: URL? = nil,
+        fileManager: FileManager = .default,
+        processRunner: @escaping ProcessRunner = ScreenCaptureService.runProcess
+    ) {
+        self.executableURL = executableURL
+        self.temporaryDirectory = temporaryDirectory
+        self.fileManager = fileManager
+        self.processRunner = processRunner
+    }
+
     func captureFile(mode: CaptureMode) throws -> URL {
         let url = try temporaryCaptureURL()
-        try runScreencapture(arguments: arguments(for: mode, outputURL: url), outputURL: url)
-        return url
+        do {
+            try runScreencapture(
+                mode: mode,
+                arguments: arguments(for: mode, outputURL: url),
+                outputURL: url
+            )
+            return url
+        } catch {
+            try? fileManager.removeItem(at: url)
+            throw error
+        }
     }
 
     func captureInteractiveRegionFile() throws -> URL {
@@ -48,38 +81,102 @@ struct ScreenCaptureService {
     }
 
     private func temporaryCaptureURL() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CaptureLab", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
+        let directory: URL
+        if let temporaryDirectory {
+            try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            directory = temporaryDirectory
+        } else {
+            directory = try ScreenCaptureLifecycle.shared.captureDirectory()
+        }
         return directory.appendingPathComponent("capture-\(UUID().uuidString).png")
     }
 
-    private func runScreencapture(arguments: [String], outputURL url: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = arguments
-
+    private func runScreencapture(mode: CaptureMode, arguments: [String], outputURL url: URL) throws {
+        let result: ProcessResult
         do {
-            try process.run()
-            process.waitUntilExit()
+            result = try processRunner(executableURL, arguments)
         } catch {
             throw CaptureLabError.captureFailed(error.localizedDescription)
         }
 
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            if process.terminationStatus == 0 {
+        let stderr = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.terminationStatus == 0 else {
+            if result.terminationStatus == 1,
+               mode.isInteractive,
+               stderr.isEmpty,
+               !fileManager.fileExists(atPath: url.path) {
+                throw CaptureLabError.captureCancelled
+            }
+            let message = stderr.isEmpty
+                ? "screencapture exited with status \(result.terminationStatus)."
+                : stderr
+            throw CaptureLabError.captureFailed(message)
+        }
+
+        guard fileManager.fileExists(atPath: url.path) else {
+            if stderr.isEmpty {
                 throw CaptureLabError.captureFailed(L10n.noCaptureFileCreated)
             }
-            throw CaptureLabError.captureCancelled
+            throw CaptureLabError.captureFailed(stderr)
         }
 
-        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
         guard size > 0 else {
-            try? FileManager.default.removeItem(at: url)
-            throw CaptureLabError.captureCancelled
+            throw CaptureLabError.captureFailed(L10n.noCaptureFileCreated)
+        }
+    }
+
+    static func runProcess(executableURL: URL, arguments: [String]) throws -> ProcessResult {
+        try runProcess(
+            executableURL: executableURL,
+            arguments: arguments,
+            registry: ScreenCaptureLifecycle.shared.processRegistry
+        )
+    }
+
+    static func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        registry: ScreenCaptureProcessRegistry
+    ) throws -> ProcessResult {
+        let process = Process()
+        let standardError = Pipe()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardError = standardError
+        process.standardOutput = FileHandle.nullDevice
+
+        try registry.beginLaunch()
+        do {
+            try process.run()
+        } catch {
+            registry.launchFailed()
+            throw error
         }
 
+        let wasRegistered = registry.registerLaunchedProcess(process)
+        if !wasRegistered {
+            registry.terminateRejectedLaunch(process)
+        }
+        defer { registry.unregister(process) }
+
+        let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return ProcessResult(
+            terminationStatus: process.terminationStatus,
+            standardError: String(decoding: errorData, as: UTF8.self)
+        )
+    }
+}
+
+private extension CaptureMode {
+    var isInteractive: Bool {
+        switch self {
+        case .region, .window, .delayedRegion:
+            return true
+        case .fullScreen:
+            return false
+        }
     }
 }
