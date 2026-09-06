@@ -226,7 +226,16 @@ final class PackagingGuidanceTests: XCTestCase {
         XCTAssertTrue(packageScript.contains(#"RELEASE_WORK_DIR="$(/usr/bin/mktemp -d"#))
         XCTAssertTrue(packageScript.contains("trap cleanup_release_assets EXIT"))
         XCTAssertTrue(packageScript.contains(#"/bin/mv "$WORK_DMG_PATH" "$DMG_PATH""#))
-        XCTAssertTrue(versionEnvironment.contains("CAPTURELAB_VERSION=0.4.2"))
+        let versionLine = try XCTUnwrap(versionEnvironment.split(separator: "\n").first {
+            $0.hasPrefix("CAPTURELAB_VERSION=")
+        })
+        let version = String(versionLine.dropFirst("CAPTURELAB_VERSION=".count))
+        XCTAssertFalse(version.isEmpty)
+        let viewModel = try String(
+            contentsOf: repositoryRoot.appendingPathComponent("Sources/CaptureLab/Views/CaptureLabViewModel.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(viewModel.contains(#"?? "\#(version)""#))
     }
 
     func testReadmeDocumentsStableLocalSigningLimitsAndRecovery() throws {

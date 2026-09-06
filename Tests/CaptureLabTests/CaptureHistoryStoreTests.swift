@@ -21,6 +21,43 @@ final class CaptureHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try reloaded.data(for: item), Data([0x89, 0x50, 0x4E, 0x47]))
     }
 
+    func testUpdateImagePreservesIdentityAndConcurrentHistoryRecords() throws {
+        let fixture = try HistoryFixture()
+        let store = CaptureHistoryStore(environment: fixture.environment)
+        let item = try store.record(data: Data([1, 2]), pixelSize: CGSize(width: 10, height: 10))
+        let otherStore = CaptureHistoryStore(environment: fixture.environment)
+        let newer = try otherStore.record(data: Data([3, 4]), pixelSize: CGSize(width: 20, height: 20))
+        let metadata = try Data(contentsOf: store.metadataURL)
+
+        XCTAssertEqual(try store.updateImage(data: Data([5, 6]), for: item), item)
+
+        XCTAssertEqual(store.items, [newer, item])
+        XCTAssertEqual(try Data(contentsOf: store.metadataURL), metadata)
+        XCTAssertEqual(try store.data(for: item), Data([5, 6]))
+        XCTAssertEqual(try store.data(for: newer), Data([3, 4]))
+        let reloaded = CaptureHistoryStore(environment: fixture.environment)
+        XCTAssertEqual(reloaded.items, [newer, item])
+        XCTAssertEqual(try reloaded.data(for: item), Data([5, 6]))
+        XCTAssertEqual(try pngURLs(in: store.historyDirectory).count, 2)
+    }
+
+    func testUpdateImageFailurePreservesPreviousImageAndMetadata() throws {
+        let fixture = try HistoryFixture()
+        let store = CaptureHistoryStore(environment: fixture.environment)
+        let item = try store.record(data: Data([1, 2]), pixelSize: CGSize(width: 10, height: 10))
+        let metadata = try Data(contentsOf: store.metadataURL)
+        let failingStore = CaptureHistoryStore(
+            environment: fixture.environment,
+            imageWriter: { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        )
+
+        XCTAssertThrowsError(try failingStore.updateImage(data: Data([3, 4]), for: item))
+
+        XCTAssertEqual(failingStore.items, [item])
+        XCTAssertEqual(try store.data(for: item), Data([1, 2]))
+        XCTAssertEqual(try Data(contentsOf: store.metadataURL), metadata)
+    }
+
     func testReloadFiltersMissingImageFiles() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)

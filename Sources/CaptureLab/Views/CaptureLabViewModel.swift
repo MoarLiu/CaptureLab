@@ -64,6 +64,7 @@ final class CaptureLabViewModel: ObservableObject {
     typealias ImageRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> NSImage?
     typealias PNGDataRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> Data?
     typealias SaveDestinationOperation = @MainActor (_ suggestedFileName: String) -> URL?
+    typealias FailurePresentationOperation = @MainActor (_ title: String, _ message: String) -> Void
 
     @Published private(set) var document: CaptureDocument?
     @Published var annotations: [CaptureAnnotation] = [] {
@@ -79,6 +80,7 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var isCheckingForUpdates = false
     @Published private(set) var isUploading = false
     @Published private(set) var historyItems: [CaptureHistoryItem]
+    @Published var finishEditingError: String?
 
     private let updateCheckService = UpdateCheckService()
     private let updateInstallService = UpdateInstallService()
@@ -92,6 +94,7 @@ final class CaptureLabViewModel: ObservableObject {
     private let imageRenderingOperation: ImageRenderingOperation
     private let pngDataRenderingOperation: PNGDataRenderingOperation
     private let saveDestinationOperation: SaveDestinationOperation
+    private let failurePresentationOperation: FailurePresentationOperation
     private var annotationUndoStack: [[CaptureAnnotation]] = []
     private var isApplyingAnnotationHistory = false
     private let maxUndoDepth = 60
@@ -100,6 +103,7 @@ final class CaptureLabViewModel: ObservableObject {
     private var ocrTask: Task<Void, Never>?
     private var uploadRequestID: UUID?
     private var uploadTask: Task<Void, Never>?
+    private var currentHistoryItem: CaptureHistoryItem?
 
     init() {
         self.r2SettingsStore = CloudflareR2SettingsStore()
@@ -112,7 +116,9 @@ final class CaptureLabViewModel: ObservableObject {
         self.imageRenderingOperation = Self.defaultImageRenderingOperation
         self.pngDataRenderingOperation = Self.defaultPNGDataRenderingOperation
         self.saveDestinationOperation = Self.defaultSaveDestinationOperation
+        self.failurePresentationOperation = Self.defaultFailurePresentationOperation
         self.historyItems = historyStore.items
+        reportHistoryLoadFailureIfNeeded()
     }
 
     init(r2SettingsStore: CloudflareR2SettingsStore) {
@@ -126,12 +132,15 @@ final class CaptureLabViewModel: ObservableObject {
         self.imageRenderingOperation = Self.defaultImageRenderingOperation
         self.pngDataRenderingOperation = Self.defaultPNGDataRenderingOperation
         self.saveDestinationOperation = Self.defaultSaveDestinationOperation
+        self.failurePresentationOperation = Self.defaultFailurePresentationOperation
         self.historyItems = historyStore.items
+        reportHistoryLoadFailureIfNeeded()
     }
 
     init(
         r2SettingsStore: CloudflareR2SettingsStore,
         historyStore: CaptureHistoryStore,
+        failurePresentationOperation: @escaping FailurePresentationOperation = CaptureLabViewModel.defaultFailurePresentationOperation,
         pasteboard: NSPasteboard = .general,
         windowVisibilityCoordinator: (any CaptureWindowVisibilityCoordinating)? = nil,
         captureOperation: @escaping CaptureOperation = CaptureLabViewModel.defaultCaptureOperation,
@@ -151,7 +160,9 @@ final class CaptureLabViewModel: ObservableObject {
         self.imageRenderingOperation = imageRenderingOperation
         self.pngDataRenderingOperation = pngDataRenderingOperation
         self.saveDestinationOperation = saveDestinationOperation
+        self.failurePresentationOperation = failurePresentationOperation
         self.historyItems = historyStore.items
+        reportHistoryLoadFailureIfNeeded()
     }
 
     var hasImage: Bool {
@@ -232,12 +243,18 @@ final class CaptureLabViewModel: ObservableObject {
                     let historyError = self.recordCurrentCaptureInHistory()
                     let didCopy = self.copyRenderedImage(successStatus: mode.completedAndCopiedTitle)
                     if didCopy, let historyError {
-                        self.statusMessage = L10n.captureCopiedButHistorySaveFailed(historyError)
+                        self.reportFailure(L10n.captureCopiedButHistorySaveFailed(historyError), title: L10n.historySaveFailedTitle)
                     }
                     onSuccess?()
                 }
             case .failure(let error):
-                self.statusMessage = error.localizedDescription
+                if error is CancellationError {
+                    self.statusMessage = L10n.captureCancelled
+                } else if let captureError = error as? CaptureLabError, case .captureCancelled = captureError {
+                    self.statusMessage = error.localizedDescription
+                } else {
+                    self.reportFailure(error.localizedDescription, title: L10n.captureFailedTitle)
+                }
             }
         }
     }
@@ -265,15 +282,22 @@ final class CaptureLabViewModel: ObservableObject {
             return false
         }
         guard let rendered = imageRenderingOperation(document.image, annotations) else {
-            statusMessage = L10n.imageCopyFailed
-            NSSound.beep()
+            reportFailure(L10n.imageCopyFailed, title: L10n.imageCopyFailedTitle)
             return false
         }
+        return copyRenderedImage(rendered, successStatus: successStatus)
+    }
+
+    private func copyRenderedImage(_ rendered: NSImage, successStatus: String, reportsFailure: Bool = true) -> Bool {
         pasteboard.clearContents()
         let didCopy = pasteboard.writeObjects([rendered])
         statusMessage = didCopy ? successStatus : L10n.imageCopyFailed
         if !didCopy {
-            NSSound.beep()
+            if reportsFailure {
+                reportFailure(L10n.imageCopyFailed, title: L10n.imageCopyFailedTitle)
+            } else {
+                NSSound.beep()
+            }
         }
         return didCopy
     }
@@ -290,8 +314,7 @@ final class CaptureLabViewModel: ObservableObject {
         // already be frozen into immutable bytes before another capture can replace
         // the current document.
         guard let data = pngDataRenderingOperation(document.image, annotations) else {
-            statusMessage = CaptureLabError.imageExportFailed.localizedDescription
-            NSSound.beep()
+            reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.imageSaveFailedTitle)
             return
         }
         guard let url = saveDestinationOperation(defaultSaveName(for: document)) else {
@@ -302,8 +325,7 @@ final class CaptureLabViewModel: ObservableObject {
             try data.write(to: url, options: .atomic)
             statusMessage = L10n.saved(url.lastPathComponent)
         } catch {
-            statusMessage = error.localizedDescription
-            NSSound.beep()
+            reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle)
         }
     }
 
@@ -327,11 +349,12 @@ final class CaptureLabViewModel: ObservableObject {
     func openHistoryItem(_ item: CaptureHistoryItem) {
         let url = historyStore.url(for: item)
         guard FileManager.default.fileExists(atPath: url.path) else {
-            statusMessage = CaptureHistoryError.imageNotFound.localizedDescription
-            NSSound.beep()
+            reportFailure(CaptureHistoryError.imageNotFound.localizedDescription, title: L10n.imageOpenFailedTitle)
             return
         }
-        loadImage(from: url, sourceURL: url, status: L10n.historyCaptureOpened)
+        if loadImage(from: url, sourceURL: url, status: L10n.historyCaptureOpened) {
+            currentHistoryItem = item
+        }
     }
 
     func copyHistoryItem(_ item: CaptureHistoryItem) {
@@ -340,23 +363,54 @@ final class CaptureLabViewModel: ObservableObject {
               let image = NSImage(data: data),
               image.isValid
         else {
-            statusMessage = CaptureHistoryError.imageNotFound.localizedDescription
-            NSSound.beep()
+            reportFailure(CaptureHistoryError.imageNotFound.localizedDescription, title: L10n.imageCopyFailedTitle)
             return
         }
 
-        pasteboard.clearContents()
-        let didCopy = pasteboard.writeObjects([image])
-        statusMessage = didCopy ? L10n.imageCopied : L10n.imageCopyFailed
-        if !didCopy {
-            NSSound.beep()
-        }
+        _ = copyRenderedImage(image, successStatus: L10n.imageCopied)
     }
 
     @discardableResult
     func finishEditing() -> Bool {
         CaptureEditingSession.commitPendingTextEdits()
-        guard copyRenderedImage() else {
+        finishEditingError = nil
+        guard let document else {
+            NSSound.beep()
+            return false
+        }
+        // Freeze one rendered image for history and the clipboard. Do not clear
+        // the editor until the durable history entry contains these same pixels.
+        guard let rendered = imageRenderingOperation(document.image, annotations),
+              let data = rendered.captureLabPNGData() else {
+            statusMessage = CaptureLabError.imageExportFailed.localizedDescription
+            finishEditingError = statusMessage
+            NSSound.beep()
+            return false
+        }
+
+        do {
+            if let currentHistoryItem,
+               let updated = try historyStore.updateImage(data: data, for: currentHistoryItem) {
+                self.currentHistoryItem = updated
+            } else {
+                // Imported images, failed initial history writes, and captures
+                // evicted by retention still need a durable edited result.
+                currentHistoryItem = try historyStore.record(
+                    data: data,
+                    pixelSize: document.pixelSize,
+                    createdAt: document.createdAt
+                )
+            }
+            historyItems = historyStore.items
+        } catch {
+            statusMessage = error.localizedDescription
+            finishEditingError = statusMessage
+            NSSound.beep()
+            return false
+        }
+
+        guard copyRenderedImage(rendered, successStatus: L10n.imageCopied, reportsFailure: false) else {
+            finishEditingError = statusMessage
             return false
         }
         clearDocument()
@@ -364,22 +418,13 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func saveHistoryItem(_ item: CaptureHistoryItem) {
-        let panel = NSSavePanel()
-        panel.title = L10n.saveCaptureTitle
-        panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = item.fileName
-
-        guard panel.runModal() == .OK, let url = panel.url else {
-            return
-        }
-
         do {
             let data = try historyStore.data(for: item)
+            guard let url = saveDestinationOperation(item.fileName) else { return }
             try data.write(to: url, options: .atomic)
             statusMessage = L10n.saved(url.lastPathComponent)
         } catch {
-            statusMessage = error.localizedDescription
-            NSSound.beep()
+            reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle)
         }
     }
 
@@ -451,8 +496,7 @@ final class CaptureLabViewModel: ObservableObject {
 
     func recognizeText() {
         guard let image = document?.image.captureLabCGImage() else {
-            statusMessage = CaptureLabError.ocrImageUnavailable.localizedDescription
-            NSSound.beep()
+            reportFailure(CaptureLabError.ocrImageUnavailable.localizedDescription, title: L10n.ocrFailedTitle)
             return
         }
 
@@ -486,8 +530,7 @@ final class CaptureLabViewModel: ObservableObject {
                     return
                 }
                 if !(error is CancellationError) {
-                    self.statusMessage = error.localizedDescription
-                    NSSound.beep()
+                    self.reportFailure(error.localizedDescription, title: L10n.ocrFailedTitle)
                 }
             }
 
@@ -567,6 +610,8 @@ final class CaptureLabViewModel: ObservableObject {
         CaptureEditingSession.commitPendingTextEdits()
         invalidateDocumentActivities()
         document = nil
+        currentHistoryItem = nil
+        finishEditingError = nil
         resetAnnotations()
         ocrText = ""
         statusMessage = L10n.ready
@@ -578,8 +623,7 @@ final class CaptureLabViewModel: ObservableObject {
               let image = NSImage(data: data),
               image.isValid
         else {
-            statusMessage = CaptureLabError.imageLoadFailed.localizedDescription
-            NSSound.beep()
+            reportFailure(CaptureLabError.imageLoadFailed.localizedDescription, title: L10n.imageOpenFailedTitle)
             return false
         }
 
@@ -589,6 +633,8 @@ final class CaptureLabViewModel: ObservableObject {
         CaptureEditingSession.commitPendingTextEdits()
         invalidateDocumentActivities()
         document = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: Date())
+        currentHistoryItem = nil
+        finishEditingError = nil
         resetAnnotations()
         ocrText = ""
         statusMessage = status
@@ -615,7 +661,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
 
         do {
-            _ = try historyStore.record(
+            currentHistoryItem = try historyStore.record(
                 data: data,
                 pixelSize: document.pixelSize,
                 createdAt: document.createdAt
@@ -705,8 +751,24 @@ final class CaptureLabViewModel: ObservableObject {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    static func defaultFailurePresentationOperation(title: String, message: String) {
+        CaptureFailurePresenter.shared.present(title: title, message: message)
+    }
+
+    private func reportFailure(_ message: String, title: String) {
+        statusMessage = message
+        NSSound.beep()
+        failurePresentationOperation(title, message)
+    }
+
+    private func reportHistoryLoadFailureIfNeeded() {
+        if let error = historyStore.loadError {
+            reportFailure(error.localizedDescription, title: L10n.historyLoadFailedTitle)
+        }
+    }
+
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.2"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.3"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {
@@ -750,23 +812,10 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func presentUpdateFailure(_ error: Error) {
-        statusMessage = L10n.updateCheckFailedTitle
-        let alert = NSAlert()
-        alert.messageText = L10n.updateCheckFailedTitle
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: L10n.ok)
-        _ = alert.captureLabRunModal()
+        reportFailure(error.localizedDescription, title: L10n.updateCheckFailedTitle)
     }
 
     private func presentUploadFailure(_ error: Error) {
-        statusMessage = error.localizedDescription
-        NSSound.beep()
-        let alert = NSAlert()
-        alert.messageText = L10n.uploadFailedTitle
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: L10n.ok)
-        _ = alert.captureLabRunModal()
+        reportFailure(error.localizedDescription, title: L10n.uploadFailedTitle)
     }
 }

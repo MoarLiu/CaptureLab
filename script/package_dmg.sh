@@ -162,6 +162,10 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+# SwiftPM release binaries retain debug-map entries with local source/object
+# paths. Remove those entries before signing the distributable executables.
+/usr/bin/strip -S "$APP_BINARY" "$SWAP_HELPER"
+
 codesign --force --sign "$LOCAL_CODE_SIGNING_IDENTITY_SHA1" \
   --identifier "$SWAP_HELPER_BUNDLE_ID" \
   "$SWAP_HELPER"

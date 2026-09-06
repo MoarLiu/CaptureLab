@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.3 - 2026-09-06
+
+- Done now saves the rendered image back to recent captures, including all
+  annotations and mosaics. Copying, uploading, and reopening that history entry
+  use the edited result. Failed history saves preserve the editor for retry.
+- Added visible operation status and error dialogs for capture, image loading,
+  saving, OCR, and history failures, including captures started in the background.
+  Cancelling a capture does not show an error dialog.
+- Enforced update size limits while receiving response headers and image data,
+  with cancellation and cleanup of incomplete downloads.
+- Corrected update version ordering for prereleases, final releases, and build
+  metadata, and aligned the checker with the installer.
+- Removed local build-path metadata from release executables.
+
+Artifacts:
+
+- `CaptureLab-0.4.3-macos-arm64.dmg`
+- SHA-256: `e3fc825e44a49c6d48db1103dffed1d72367a9983394915ce79adbc891a67067`
+- `CaptureLab-0.4.3-macos-arm64.dmg.sha256`
+- `CaptureLab-0.4.3-macos-arm64.dmg.sig`
+- `CaptureLab-0.4.3-macos-x86_64.dmg`
+- SHA-256: `38d5a40aefbe7a4e3cde123476f824a894a017ffb855268c7980e0c7ba10e709`
+- `CaptureLab-0.4.3-macos-x86_64.dmg.sha256`
+- `CaptureLab-0.4.3-macos-x86_64.dmg.sig`
+
+Known release notes:
+
+- Shortcut recording still has limitations for shortcuts already assigned to
+  application menu commands and some shifted or non-US keyboard combinations.
+- The app uses a stable local self-signed certificate rather than Apple
+  Developer ID and is not notarized. macOS may require manual approval on
+  first launch.
+
 ## 0.4.2 - 2026-07-12
 
 - Fixed Mosaic rendering for indexed, CMYK, and transparent images, with an

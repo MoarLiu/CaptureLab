@@ -55,7 +55,10 @@ struct UpdateCheckService: @unchecked Sendable {
         let latestVersion = release.tagName.normalizedVersionString
         let current = currentVersion.normalizedVersionString
 
-        if Version(latestVersion) > Version(current) {
+        guard let latest = UpdateVersion(latestVersion), let installed = UpdateVersion(current) else {
+            throw UpdateCheckError.invalidVersion
+        }
+        if latest > installed {
             let package = try updatePackage(
                 in: release,
                 latestVersion: latestVersion,
@@ -143,26 +146,18 @@ struct UpdateCheckService: @unchecked Sendable {
         var request = URLRequest(url: asset.downloadURL)
         request.setValue("CaptureLab", forHTTPHeaderField: "User-Agent")
 
-        let (temporaryURL, response) = try await session.download(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode)
-        else {
-            throw UpdateCheckError.downloadFailed
-        }
-
-        if response.expectedContentLength > maximumSizeBytes {
-            throw UpdateCheckError.downloadTooLarge(maximumSizeBytes)
-        }
-        let attributes = try fileManager.attributesOfItem(atPath: temporaryURL.path)
+        try await UpdateAssetDownloader.download(
+            request: request,
+            to: destinationURL,
+            maximumSizeBytes: maximumSizeBytes,
+            configuration: session.configuration,
+            fileManager: fileManager
+        )
+        let attributes = try fileManager.attributesOfItem(atPath: destinationURL.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? -1
         guard size >= 0, size <= maximumSizeBytes else {
             throw UpdateCheckError.downloadTooLarge(maximumSizeBytes)
         }
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
-        }
-        try fileManager.moveItem(at: temporaryURL, to: destinationURL)
     }
 
     @discardableResult
@@ -220,6 +215,7 @@ struct UpdateAsset: Equatable, Sendable {
 enum UpdateCheckError: LocalizedError {
     case repositoryUnavailable
     case requestFailed
+    case invalidVersion
     case updateAssetUnavailable(String)
     case downloadFailed
     case downloadTooLarge(Int64)
@@ -232,6 +228,8 @@ enum UpdateCheckError: LocalizedError {
             return L10n.updateRepositoryUnavailable
         case .requestFailed:
             return L10n.updateCheckFailedTitle
+        case .invalidVersion:
+            return L10n.updateInvalidVersion
         case .updateAssetUnavailable(let architecture):
             return L10n.updateAssetUnavailable(architecture)
         case .downloadFailed:
@@ -318,31 +316,6 @@ private enum CaptureLabUpdateArchitecture {
         #else
         return "unknown"
         #endif
-    }
-}
-
-private struct Version: Comparable {
-    let parts: [Int]
-
-    init(_ value: String) {
-        parts = value
-            .split(separator: ".")
-            .map { component in
-                let digits = component.prefix { $0.isNumber }
-                return Int(digits) ?? 0
-            }
-    }
-
-    static func < (lhs: Version, rhs: Version) -> Bool {
-        let count = max(lhs.parts.count, rhs.parts.count)
-        for index in 0..<count {
-            let left = index < lhs.parts.count ? lhs.parts[index] : 0
-            let right = index < rhs.parts.count ? rhs.parts[index] : 0
-            if left != right {
-                return left < right
-            }
-        }
-        return false
     }
 }
 

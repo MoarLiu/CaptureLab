@@ -22,6 +22,7 @@ enum CaptureHistoryError: LocalizedError {
 @MainActor
 final class CaptureHistoryStore: ObservableObject {
     static let maxItemCount = 30
+    typealias ImageWriter = (Data, URL) throws -> Void
     typealias MetadataWriter = (Data, URL) throws -> Void
 
     @Published private(set) var items: [CaptureHistoryItem]
@@ -34,6 +35,7 @@ final class CaptureHistoryStore: ObservableObject {
 
     private let environment: [String: String]
     private let fileManager: FileManager
+    private let imageWriter: ImageWriter
     private let metadataWriter: MetadataWriter
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -41,12 +43,16 @@ final class CaptureHistoryStore: ObservableObject {
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
+        imageWriter: @escaping ImageWriter = { data, url in
+            try data.write(to: url, options: .atomic)
+        },
         metadataWriter: @escaping MetadataWriter = { data, url in
             try data.write(to: url, options: .atomic)
         }
     ) {
         self.environment = environment
         self.fileManager = fileManager
+        self.imageWriter = imageWriter
         self.metadataWriter = metadataWriter
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let historyEncoder = encoder
@@ -149,7 +155,7 @@ final class CaptureHistoryStore: ObservableObject {
             let id = UUID()
             let fileName = "capture-\(Self.fileTimestampFormatter.string(from: createdAt))-\(id.uuidString).png"
             let fileURL = historyDirectory.appendingPathComponent(fileName)
-            try data.write(to: fileURL, options: .atomic)
+            try imageWriter(data, fileURL)
 
             let item = CaptureHistoryItem(
                 id: id,
@@ -186,6 +192,28 @@ final class CaptureHistoryStore: ObservableObject {
                 fileManager: fileManager
             )
             return item
+        }
+    }
+
+    /// Annotation edits keep the original dimensions and metadata. Replacing
+    /// the PNG atomically also updates history actions holding the original
+    /// item. Return nil if retention has removed it while the editor was open.
+    func updateImage(data: Data, for item: CaptureHistoryItem) throws -> CaptureHistoryItem? {
+        guard !data.isEmpty else {
+            throw CaptureHistoryError.imageDataUnavailable
+        }
+
+        return try withExclusiveHistoryLock {
+            let currentItems = latestItemsFromDisk()
+            guard let currentItem = currentItems.first(where: {
+                $0.id == item.id && $0.fileName == item.fileName
+            }) else {
+                return nil
+            }
+
+            try imageWriter(data, url(for: currentItem))
+            items = currentItems
+            return currentItem
         }
     }
 

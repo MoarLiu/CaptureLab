@@ -26,6 +26,16 @@ struct CaptureLabRootView: View {
                 openAction: model.openImage
             )
             .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+            Text(model.statusMessage)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .help(model.statusMessage)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .background(WindowChromeConfigurator())
@@ -52,6 +62,14 @@ struct CaptureLabRootView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .captureLabWindowCloseShortcuts()
+        .alert(L10n.finishEditingFailedTitle, isPresented: Binding(
+            get: { model.finishEditingError != nil },
+            set: { if !$0 { model.finishEditingError = nil } }
+        )) {
+            Button(L10n.ok, role: .cancel) { model.finishEditingError = nil }
+        } message: {
+            Text(model.finishEditingError ?? "")
+        }
     }
 
     private func copyImageFromToolbar() {

@@ -120,9 +120,7 @@ struct UpdateInstallService {
             let marker = "-macos-\(architecture)"
             guard body.hasSuffix(marker) else { continue }
             let version = String(body.dropLast(marker.count))
-            guard !version.isEmpty,
-                  version.range(of: "^[0-9]+(?:\\.[0-9]+)*(?:[-+][A-Za-z0-9.-]+)?$", options: .regularExpression) != nil
-            else {
+            guard UpdateVersion(version) != nil else {
                 throw UpdateInstallError.invalidUpdatePackage
             }
             return PackageMetadata(version: version, architecture: architecture)
@@ -167,7 +165,7 @@ capturelab_safe_relaunch_target() {
   local bundle_id
   local version
   local architectures
-  local version_pattern='^[0-9]+(\.[0-9]+)*([-+][A-Za-z0-9.-]+)?$'
+  local version_pattern='\#(UpdateVersion.validationPattern)'
 
   if [[ "$originating_pid" == <-> && "$originating_pid" -gt 1 ]]; then
     for _ in {1..50}; do
@@ -259,13 +257,9 @@ exit "$LOCK_STATUS"
     static let updateDecisionShellFunctions = #"""
 capturelab_version_is_valid() {
   local version="$1"
-  local pattern='^[0-9]+(\.[0-9]+)*([-+][A-Za-z0-9.-]+)?$'
+  local pattern='\#(UpdateVersion.validationPattern)'
 
-  [[ "$version" =~ "$pattern" ]] || return 1
-  if [[ "$version" == *-* ]]; then
-    local prerelease="${version#*-}"
-    [[ "$prerelease" != .* && "$prerelease" != *. && "$prerelease" != *..* ]] || return 1
-  fi
+  [[ "$version" =~ "$pattern" ]]
 }
 
 capturelab_normalize_decimal() {
@@ -315,6 +309,8 @@ capturelab_compare_versions() {
 
   capturelab_version_is_valid "$left_version" || return 2
   capturelab_version_is_valid "$right_version" || return 2
+  left_version="${left_version%%+*}"
+  right_version="${right_version%%+*}"
   left_core="${left_version%%[-+]*}"
   right_core="${right_version%%[-+]*}"
   left_parts=("${(@s:.:)left_core}")

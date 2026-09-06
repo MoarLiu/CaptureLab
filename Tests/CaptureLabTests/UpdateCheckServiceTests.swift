@@ -87,6 +87,36 @@ final class UpdateCheckServiceTests: XCTestCase {
         )
     }
 
+    func testReleaseCandidateDiscoversFinalRelease() async throws {
+        let assets = ["dmg", "dmg.sha256", "dmg.sig"].map {
+            ["name": "CaptureLab-0.5.0-macos-arm64.\($0)", "browser_download_url": "https://example.com/\($0)"]
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["tag_name": "v0.5.0", "assets": assets])
+        let service = makeService(statusCode: 200, body: String(decoding: body, as: UTF8.self))
+        let result = try await service.checkForUpdates(currentVersion: "0.5.0-rc.1+build.42")
+        guard case .updateAvailable(_, let latestVersion, _) = result else {
+            return XCTFail("A final release must supersede its release candidate")
+        }
+        XCTAssertEqual(latestVersion, "0.5.0")
+    }
+
+    func testBuildMetadataAndOlderPrereleasesDoNotTriggerUpdate() async throws {
+        for (current, latest) in [("1.0.0+build.1", "1.0.0+build.2"), ("1.0.0", "1.0.0-rc.1")] {
+            let data = try JSONSerialization.data(withJSONObject: ["tag_name": "v\(latest)"])
+            let service = makeService(statusCode: 200, body: String(decoding: data, as: UTF8.self))
+            let result = try await service.checkForUpdates(currentVersion: current)
+            guard case .upToDate = result else { return XCTFail("Unexpected update: \(result)") }
+        }
+    }
+
+    func testInvalidVersionIsReportedInsteadOfClaimingUpToDate() async throws {
+        let service = makeService(statusCode: 200, body: #"{"tag_name":"v1..0"}"#)
+        do {
+            _ = try await service.checkForUpdates(currentVersion: "0.4.2")
+            XCTFail("Expected invalid version")
+        } catch UpdateCheckError.invalidVersion { }
+    }
+
     func testMapsGitHubNotFoundToRepositoryUnavailable() async {
         let service = makeService(statusCode: 404, body: #"{}"#)
 
@@ -232,6 +262,32 @@ final class UpdateCheckServiceTests: XCTestCase {
             XCTAssertEqual(limit, 32)
         } catch {
             XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testMetadataAssetsHaveTheirOwnLimitAndFailuresCleanDownloads() async throws {
+        let base = "CaptureLab-0.5.0-macos-arm64.dmg"
+        let dmg = UpdateAsset(name: base, downloadURL: URL(string: "https://example.com/\(base)")!)
+        let checksum = UpdateAsset(name: base + ".sha256", downloadURL: URL(string: "https://example.com/\(base).sha256")!)
+        let signature = UpdateAsset(name: base + ".sig", downloadURL: URL(string: "https://example.com/\(base).sig")!)
+        let body = Data("fixture".utf8)
+        let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+
+        for oversized in [checksum, signature] {
+            MockURLProtocol.register(MockResponse(statusCode: 200, data: body), for: dmg.downloadURL)
+            MockURLProtocol.register(MockResponse(statusCode: 200, data: Data(digest.utf8)), for: checksum.downloadURL)
+            MockURLProtocol.register(MockResponse(statusCode: 200, data: Data(repeating: 0, count: 64)), for: signature.downloadURL)
+            MockURLProtocol.register(MockResponse(statusCode: 200, data: Data(repeating: 0, count: Int(UpdateCheckService.maximumMetadataSizeBytes) + 1)), for: oversized.downloadURL)
+            let service = makeService(statusCode: 200, body: #"{}"#)
+            let root = try XCTUnwrap(temporaryRoots.last)
+            do {
+                _ = try await service.downloadUpdate(UpdatePackage(dmg: dmg, checksum: checksum, signature: signature, architecture: "arm64"), latestVersion: "0.5.0")
+                XCTFail("Expected metadata limit rejection")
+            } catch UpdateCheckError.downloadTooLarge(let limit) {
+                XCTAssertEqual(limit, UpdateCheckService.maximumMetadataSizeBytes)
+            }
+            let remaining = try FileManager.default.subpathsOfDirectory(atPath: root.path)
+            XCTAssertFalse(remaining.contains { $0.contains(base) }, "Partial asset set left on disk: \(remaining)")
         }
     }
 

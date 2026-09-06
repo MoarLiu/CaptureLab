@@ -56,6 +56,9 @@ enum L10n {
 
     static var saveAs: String { text(en: "Save As", zh: "保存为") }
     static let done = "Done"
+    static var finishEditingFailedTitle: String {
+        text(en: "Could not finish editing", zh: "无法完成编辑")
+    }
     static var copiedToClipboard: String { text(en: "Copied to clipboard", zh: "已复制到粘贴板") }
     static var zoom: String { text(en: "Zoom", zh: "缩放") }
     static var zoomFit: String { text(en: "Fit", zh: "适应") }
@@ -157,6 +160,13 @@ enum L10n {
     static var openImageTitle: String { text(en: "Open Image", zh: "打开图片") }
 
     static var captureCancelled: String { text(en: "Capture cancelled.", zh: "截图已取消。") }
+    static var captureFailedTitle: String { text(en: "Capture Failed", zh: "截图失败") }
+    static var imageOpenFailedTitle: String { text(en: "Could not open image", zh: "无法打开图片") }
+    static var imageSaveFailedTitle: String { text(en: "Could not save image", zh: "无法保存图片") }
+    static var imageCopyFailedTitle: String { text(en: "Could not copy image", zh: "无法复制图片") }
+    static var ocrFailedTitle: String { text(en: "Text Recognition Failed", zh: "文字识别失败") }
+    static var historySaveFailedTitle: String { text(en: "Could not save capture history", zh: "无法保存截图历史") }
+    static var historyLoadFailedTitle: String { text(en: "Could not load capture history", zh: "无法加载截图历史") }
     static var imageLoadFailed: String { text(en: "Could not load the image.", zh: "无法加载图片。") }
     static var imageExportFailed: String { text(en: "Could not export the image.", zh: "无法导出图片。") }
     static var ocrImageUnavailable: String { text(en: "Could not prepare this image for OCR.", zh: "无法准备图片进行 OCR。") }
@@ -193,6 +203,9 @@ enum L10n {
         text(en: "Current version: \(current).", zh: "当前版本：\(current)。")
     }
     static var updateCheckFailedTitle: String { text(en: "Could not check for updates", zh: "无法检查更新") }
+    static var updateInvalidVersion: String {
+        text(en: "The current or available update version is invalid.", zh: "当前版本或可用更新的版本号无效。")
+    }
     static var updateRepositoryUnavailable: String {
         text(
             en: "No public release was found for https://github.com/MoarLiu/CaptureLab.",
