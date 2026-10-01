@@ -3,6 +3,7 @@ import Foundation
 
 enum CaptureTool: String, CaseIterable, Identifiable {
     case select
+    case crop
     case arrow
     case line
     case rectangle
@@ -16,6 +17,8 @@ enum CaptureTool: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .crop:
+            return L10n.cropImage
         case .select:
             return L10n.toolSelect
         case .arrow:
@@ -39,6 +42,8 @@ enum CaptureTool: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .crop:
+            return "crop"
         case .select:
             return "cursorarrow"
         case .arrow:
@@ -62,7 +67,7 @@ enum CaptureTool: String, CaseIterable, Identifiable {
 
     var annotationKind: CaptureAnnotation.Kind? {
         switch self {
-        case .select:
+        case .select, .crop:
             return nil
         case .arrow:
             return .arrow
@@ -136,19 +141,22 @@ struct CaptureAnnotation: Identifiable, Hashable {
     var normalizedRect: CGRect
     var normalizedPoints: [CaptureAnnotationPoint]
     var text: String
+    var appearance: CaptureAnnotationAppearance
 
     init(
         id: UUID = UUID(),
         kind: Kind,
         normalizedRect: CGRect,
         normalizedPoints: [CaptureAnnotationPoint] = [],
-        text: String = ""
+        text: String = "",
+        appearance: CaptureAnnotationAppearance = .init()
     ) {
         self.id = id
         self.kind = kind
         self.normalizedRect = normalizedRect.standardized.clampedToUnit()
         self.normalizedPoints = normalizedPoints.map { CaptureAnnotationPoint($0.cgPoint.clampedToUnit()) }
         self.text = text
+        self.appearance = appearance
     }
 
     static func arrow(start: CGPoint, end: CGPoint) -> CaptureAnnotation {
@@ -234,7 +242,8 @@ struct CaptureAnnotation: Identifiable, Hashable {
             kind: kind,
             normalizedRect: rect,
             normalizedPoints: normalizedPoints,
-            text: text
+            text: text,
+            appearance: appearance
         )
     }
 
@@ -244,7 +253,8 @@ struct CaptureAnnotation: Identifiable, Hashable {
             kind: kind,
             normalizedRect: CGRect.bounding(points),
             normalizedPoints: points.map(CaptureAnnotationPoint.init),
-            text: text
+            text: text,
+            appearance: appearance
         )
     }
 

@@ -6,12 +6,25 @@ Current features:
 
 - global screenshot shortcut from the menu bar app
 - region, full screen, window, and delayed region capture modes
-- recent capture history with open, copy, save as, and Cloudflare R2 upload actions
+- full thumbnail browser for all 30 retained captures, with refresh, open, copy,
+  save as, Cloudflare R2 upload, pin, and confirmed deletion actions
 - image preview with Fit, 50%, 100%, and 200% zoom
 - arrow, line, rectangle, counter, brush, text, text highlight, and mosaic markup
+- annotation color, line width, and font size controls for new and selected markup
+- crop selection with source-pixel dimensions, Enter to apply, and Esc to cancel
+- undo and redo for annotation edits and crops
+- floating pinned screenshots with resize and opacity controls
 - copy/save rendered PNG output
 - optional Cloudflare R2 upload for rendered screenshots
 - optional local Vision OCR tool with editable OCR text and copy support
+
+Cropping merges the current annotations into the cropped pixels, including
+mosaic redactions. Undo restores the original image and editable annotations;
+redo reapplies the crop. Crop dimensions and exported PNGs use the source pixels,
+including when the preview is scaled or the image is captured on a Retina screen.
+Pinned screenshots keep a snapshot of the edited image and close independently
+with Esc or Command-W. CaptureLab temporarily hides its windows, including pins,
+while taking a new screenshot.
 
 Build and run:
 

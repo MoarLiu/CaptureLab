@@ -20,12 +20,19 @@ struct CaptureLabApp: App {
         Window(L10n.appName, id: "main") {
             CaptureLabRootView(
                 model: model,
-                shortcutStore: shortcutStore
+                shortcutStore: shortcutStore,
+                showHistory: showHistory
             )
                 .frame(minWidth: 1_080, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1_080, height: 620)
+
+        Window(L10n.historyBrowserTitle, id: "capture-history") {
+            CaptureHistoryView(model: model, showEditor: showMainWindow)
+                .frame(minWidth: 600, minHeight: 400)
+        }
+        .defaultSize(width: 780, height: 580)
 
         Window(L10n.shortcutSettingsTitle, id: "shortcut-settings") {
             ShortcutSettingsView(
@@ -48,6 +55,7 @@ struct CaptureLabApp: App {
                 shortcutStore: shortcutStore,
                 globalHotKeyController: globalHotKeyController,
                 showMainWindow: showMainWindow,
+                showHistory: showHistory,
                 showShortcutSettings: showShortcutSettings,
                 showR2Settings: showR2Settings
             )
@@ -60,6 +68,7 @@ struct CaptureLabApp: App {
                 model: model,
                 shortcutStore: shortcutStore,
                 showMainWindow: showMainWindow,
+                showHistory: showHistory,
                 showR2Settings: showR2Settings
             )
         }
@@ -76,6 +85,13 @@ struct CaptureLabApp: App {
         _ = globalHotKeyController.configure(shortcut: shortcutStore.captureShortcut) {
             model.capture(.region, onSuccess: showMainWindow)
         }
+    }
+
+    private func showHistory() {
+        model.refreshHistory()
+        NSApp.setActivationPolicy(.regular)
+        openWindow(id: "capture-history")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func registerGlobalHotKey(_ shortcut: CaptureKeyboardShortcut) -> String? {

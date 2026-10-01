@@ -29,6 +29,8 @@ enum L10n {
     static var saveEditedImage: String { text(en: "Save Edited Image...", zh: "保存编辑后图片...") }
     static var copyEditedImage: String { text(en: "Copy Edited Image", zh: "复制编辑后图片") }
     static var undoMarkup: String { text(en: "Undo Markup", zh: "撤销标注") }
+    static var redoMarkup: String { text(en: "Redo", zh: "重做") }
+    static var undoEdit: String { text(en: "Undo", zh: "撤销") }
     static var clearMarkups: String { text(en: "Clear Markups", zh: "清空标注") }
     static var captureMenu: String { text(en: "Capture", zh: "截图") }
     static var toolsMenu: String { text(en: "Tools", zh: "工具") }
@@ -55,7 +57,7 @@ enum L10n {
     }
 
     static var saveAs: String { text(en: "Save As", zh: "保存为") }
-    static let done = "Done"
+    static var done: String { text(en: "Done", zh: "完成") }
     static var finishEditingFailedTitle: String {
         text(en: "Could not finish editing", zh: "无法完成编辑")
     }
@@ -70,6 +72,50 @@ enum L10n {
     static var uploadedURLCopied: String { text(en: "Uploaded URL copied", zh: "已上传，URL 已复制") }
     static var uploadFailedTitle: String { text(en: "Upload Failed", zh: "上传失败") }
     static var recentCaptures: String { text(en: "Recent Captures", zh: "最近截图") }
+    static var historyBrowserTitle: String { text(en: "Capture History", zh: "截图历史") }
+    static var historyRefresh: String { text(en: "Refresh", zh: "刷新") }
+    static var historyDelete: String { text(en: "Delete", zh: "删除") }
+    static var historyDeleteConfirmationTitle: String { text(en: "Delete this capture?", zh: "删除这张截图？") }
+    static var historyDeleteConfirmationMessage: String {
+        text(en: "The capture will be permanently removed from local history.", zh: "这张截图将从本地历史中永久删除。")
+    }
+    static var historyThumbnailUnavailable: String { text(en: "Preview unavailable", zh: "无法显示预览") }
+    static var historyPin: String { text(en: "Pin", zh: "贴图置顶") }
+    static var pinImage: String { text(en: "Pin Image", zh: "贴图置顶") }
+    static var pinImageFailedTitle: String { text(en: "Could not pin image", zh: "无法贴图置顶") }
+    static var imagePinned: String { text(en: "Image pinned above other windows.", zh: "图片已贴图置顶。") }
+    static var pinOpacity: String { text(en: "Opacity", zh: "透明度") }
+    static var pinClose: String { text(en: "Close Pin", zh: "关闭贴图") }
+    static var pinWindowHelp: String {
+        text(en: "Drag the title bar to move. Resize from a corner. Esc or ⌘W closes this pin.", zh: "拖动标题栏移动，拖动窗口边角缩放。Esc 或 ⌘W 关闭这张贴图。")
+    }
+    static var annotationColor: String { text(en: "Color", zh: "颜色") }
+    static var annotationLineWidth: String { text(en: "Width", zh: "线宽") }
+    static var annotationFontSize: String { text(en: "Font", zh: "字号") }
+    static var selectedAnnotationAppearanceHint: String { text(en: "Editing selected markup", zh: "修改已选标注") }
+    static var newAnnotationAppearanceHint: String { text(en: "Style for new markup", zh: "新标注样式") }
+    static var annotationAppearanceHelp: String {
+        text(en: "Select a markup to change its style. With no selection, these settings apply to new markups.", zh: "选中标注后可修改其样式；未选中时，设置作用于新建标注。")
+    }
+    static var toolCrop: String { text(en: "Crop", zh: "裁剪") }
+    static var cropImage: String { toolCrop }
+    static var cropApply: String { text(en: "Apply Crop", zh: "应用裁剪") }
+    static var cropPrompt: String { text(en: "Drag to select the crop area", zh: "拖动框选裁剪区域") }
+    static var cropHelp: String {
+        text(en: "Crop merges existing markups into the image. Undo restores the original image and editable markups. Return applies; Esc cancels.", zh: "裁剪会合并现有标注；撤销可恢复原图和可编辑标注。Return 应用，Esc 取消。")
+    }
+    static func cropPixelSize(width: Int, height: Int) -> String {
+        text(en: "\(width) × \(height) px", zh: "\(width) × \(height) 像素")
+    }
+    static var imageCropped: String { text(en: "Image cropped.", zh: "图片已裁剪。") }
+    static var cropCancelled: String { text(en: "Crop cancelled.", zh: "已取消裁剪。") }
+    static var cropFailedTitle: String { text(en: "Could not crop image", zh: "无法裁剪图片") }
+    static var pinFailedTitle: String { pinImageFailedTitle }
+    static var editUndone: String { text(en: "Edit undone.", zh: "已撤销编辑。") }
+    static var editRedone: String { markupRedone }
+    static var markupRedone: String { text(en: "Edit redone.", zh: "已重做编辑。") }
+    static var historyCaptureDeleted: String { text(en: "Capture deleted from history.", zh: "已从历史中删除截图。") }
+    static var historyDeleteFailedTitle: String { text(en: "Could not delete capture", zh: "无法删除截图") }
     static var noRecentCaptures: String { text(en: "No recent captures", zh: "没有最近截图") }
     static var openRecentCapture: String { text(en: "Open", zh: "打开") }
     static var copyRecentCapture: String { text(en: "Copy", zh: "复制") }

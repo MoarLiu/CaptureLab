@@ -5,6 +5,12 @@ struct CaptureCanvasView: View {
     @Binding var annotations: [CaptureAnnotation]
     @Binding var selectedTool: CaptureTool
     @Binding var zoomLevel: CaptureZoomLevel
+    var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
+    var selectedAnnotationID: UUID?
+    var cropSelection: Binding<CGRect?> = .constant(nil)
+    var onSelectionChanged: (UUID?) -> Void = { _ in }
+    var applyCrop: () -> Void = {}
+    var cancelCrop: () -> Void = {}
     let captureAction: () -> Void
     let openAction: () -> Void
 
@@ -40,7 +46,13 @@ struct CaptureCanvasView: View {
             document: document,
             annotations: $annotations,
             selectedTool: $selectedTool,
-            zoomLevel: $zoomLevel
+            zoomLevel: $zoomLevel,
+            annotationAppearance: annotationAppearance,
+            selectedAnnotationID: selectedAnnotationID,
+            cropSelection: cropSelection,
+            onSelectionChanged: onSelectionChanged,
+            applyCrop: applyCrop,
+            cancelCrop: cancelCrop
         )
     }
 

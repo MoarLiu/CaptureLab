@@ -96,11 +96,6 @@ extension NSImage {
 
         let pixelSize = CGSize(width: source.width, height: source.height)
         let bounds = CGRect(origin: .zero, size: pixelSize)
-        let style = CaptureAnnotationStyle(
-            sourcePixelSize: pixelSize,
-            renderedImageSize: pixelSize
-        )
-
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = graphicsContext
@@ -108,6 +103,11 @@ extension NSImage {
         graphicsContext.cgContext.draw(source, in: bounds)
 
         for annotation in annotations {
+            let style = CaptureAnnotationStyle(
+                sourcePixelSize: pixelSize,
+                renderedImageSize: pixelSize,
+                appearance: annotation.appearance
+            )
             switch annotation.kind {
             case .arrow:
                 drawCaptureLabArrow(annotation.imagePoints(in: pixelSize), style: style)
@@ -116,7 +116,7 @@ extension NSImage {
             case .rectangle:
                 let path = NSBezierPath(rect: annotation.imageRect(in: pixelSize))
                 path.lineWidth = style.lineWidth
-                NSColor.systemRed.setStroke()
+                style.color.setStroke()
                 path.stroke()
             case .counter:
                 drawCaptureLabCounter(
@@ -170,7 +170,7 @@ extension NSImage {
         path.line(to: end)
         path.line(to: right)
 
-        NSColor.systemRed.setStroke()
+        style.color.setStroke()
         path.stroke()
     }
 
@@ -189,7 +189,7 @@ extension NSImage {
         path.move(to: start)
         path.line(to: end)
 
-        NSColor.systemRed.setStroke()
+        style.color.setStroke()
         path.stroke()
     }
 
@@ -207,7 +207,7 @@ extension NSImage {
             path.line(to: point)
         }
 
-        NSColor.systemRed.setStroke()
+        style.color.setStroke()
         path.stroke()
     }
 
@@ -227,7 +227,7 @@ extension NSImage {
             width: diameter,
             height: diameter
         )
-        NSColor.systemRed.setFill()
+        style.color.setFill()
         NSBezierPath(ovalIn: circleRect).fill()
 
         let fontSize = style.counterFontSize(for: diameter)
@@ -235,7 +235,7 @@ extension NSImage {
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
-            .foregroundColor: NSColor.white,
+            .foregroundColor: style.counterTextColor,
             .paragraphStyle: paragraph
         ]
         let textHeight = fontSize * 1.18
@@ -264,7 +264,7 @@ extension NSImage {
 
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: NSColor.systemRed,
+            .foregroundColor: style.color,
             .paragraphStyle: paragraph
         ]
         let textRect = rect.insetBy(
@@ -279,7 +279,7 @@ extension NSImage {
             return
         }
 
-        NSColor.systemYellow.withAlphaComponent(0.42).setFill()
+        style.highlightColor.withAlphaComponent(0.42).setFill()
         NSBezierPath(
             roundedRect: rect,
             xRadius: style.highlightCornerRadius,

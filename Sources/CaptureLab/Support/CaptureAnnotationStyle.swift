@@ -1,4 +1,4 @@
-import CoreGraphics
+import AppKit
 
 /// Annotation metrics expressed in the coordinate space currently being drawn.
 ///
@@ -10,6 +10,23 @@ struct CaptureAnnotationStyle {
 
     let sourcePixelSize: CGSize
     let renderedImageSize: CGSize
+    var appearance: CaptureAnnotationAppearance = .init()
+
+    var color: NSColor { appearance.color?.nsColor ?? .systemRed }
+    var highlightColor: NSColor { appearance.color?.nsColor ?? .systemYellow }
+
+    var counterTextColor: NSColor {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return .white }
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(rgb.redComponent)
+            + 0.7152 * linear(rgb.greenComponent)
+            + 0.0722 * linear(rgb.blueComponent)
+        let blackContrast = (luminance + 0.05) / 0.05
+        let whiteContrast = 1.05 / (luminance + 0.05)
+        return blackContrast >= whiteContrast ? .black : .white
+    }
 
     private var renderedScale: CGFloat {
         let widthScale = renderedImageSize.width / max(sourcePixelSize.width, 1)
@@ -22,15 +39,15 @@ struct CaptureAnnotationStyle {
     }
 
     var lineWidth: CGFloat {
-        max(3, sourceMinimumDimension * 0.004) * renderedScale
+        (appearance.lineWidth ?? max(3, sourceMinimumDimension * 0.004)) * renderedScale
     }
 
     var brushWidth: CGFloat {
-        max(4, sourceMinimumDimension * 0.005) * renderedScale
+        (appearance.lineWidth ?? max(4, sourceMinimumDimension * 0.005)) * renderedScale
     }
 
     var arrowHeadLength: CGFloat {
-        max(14, max(3, sourceMinimumDimension * 0.004) * 4) * renderedScale
+        max(14 * renderedScale, lineWidth * 4)
     }
 
     let arrowHeadAngle: CGFloat = .pi / 7
@@ -48,10 +65,12 @@ struct CaptureAnnotationStyle {
     }
 
     func textFontSize(for rect: CGRect) -> CGFloat {
-        max(14 * renderedScale, min(44 * renderedScale, rect.height * 0.46))
+        appearance.fontSize.map { $0 * renderedScale }
+            ?? max(14 * renderedScale, min(44 * renderedScale, rect.height * 0.46))
     }
 
     func counterFontSize(for diameter: CGFloat) -> CGFloat {
-        max(12 * renderedScale, diameter * 0.48)
+        appearance.fontSize.map { $0 * renderedScale }
+            ?? max(12 * renderedScale, diameter * 0.48)
     }
 }

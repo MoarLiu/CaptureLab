@@ -611,7 +611,7 @@ struct CloudflareR2UploadRequest: Equatable {
     var contentType: String
 }
 
-struct CloudflareR2UploadResult: Equatable {
+struct CloudflareR2UploadResult: Equatable, Sendable {
     var url: String
     var objectKey: String
     var sizeBytes: Int

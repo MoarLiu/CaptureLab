@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.0 - 2026-10-01
+
+- Added annotation color, line width, and font size controls for new and selected
+  markup, using shared preview and export styling.
+- Added source-pixel crop selection with an apply/cancel workflow. Cropping keeps
+  rendered redactions; Undo restores the original image and editable annotations.
+- Added Redo and unified edit history for annotation changes and crops.
+- Added independent, resizable always-on-top screenshot windows with opacity
+  controls and Esc/Command-W closing.
+- Added a thumbnail history browser for all retained captures, including refresh,
+  open, copy, save, upload, pin, and confirmed deletion actions.
+- Made crop dimension updates and history deletion safe across concurrent app
+  instances and failed writes.
+- Preserved active annotation drags across selection-triggered SwiftUI refreshes;
+  explicit undo and deletion still cancel the gesture.
+- Kept corrected OCR text and pending source recognition during annotation-only
+  undo and redo, while crop transitions continue to invalidate stale requests.
+- Reclaimed abandoned history image-update files under the history lock after
+  interrupted edits, without deleting unrelated files or active writes.
+- Selected contrasting counter text colors for light and dark annotation fills
+  in both the preview and exported images.
+
+Artifacts:
+
+- `CaptureLab-0.5.0-macos-arm64.dmg`
+- SHA-256: `b5cd332c18be007391842491d643730545e6fb099c229d6ed9271da94e8fcf70`
+- `CaptureLab-0.5.0-macos-arm64.dmg.sha256`
+- `CaptureLab-0.5.0-macos-arm64.dmg.sig`
+- `CaptureLab-0.5.0-macos-x86_64.dmg`
+- SHA-256: `ddd578c72c3dfeed2634ff0e61e58f63cb19d7d42b0efa13edd86448851ec80a`
+- `CaptureLab-0.5.0-macos-x86_64.dmg.sha256`
+- `CaptureLab-0.5.0-macos-x86_64.dmg.sig`
+
+Known release notes:
+
+- Shortcut recording still has limitations for shortcuts already assigned to
+  application menu commands and some shifted or non-US keyboard combinations.
+- The app uses a stable local self-signed certificate rather than Apple
+  Developer ID and is not notarized. macOS may require manual approval on
+  first launch.
+- Requires macOS 13 or later. Choose arm64 for Apple Silicon or x86_64 for Intel.
+
 ## 0.4.3 - 2026-09-06
 
 - Done now saves the rendered image back to recent captures, including all

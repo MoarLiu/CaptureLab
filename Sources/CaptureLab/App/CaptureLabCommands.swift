@@ -5,6 +5,7 @@ struct CaptureLabCommands: Commands {
     @ObservedObject var model: CaptureLabViewModel
     @ObservedObject var shortcutStore: CaptureShortcutStore
     let showMainWindow: () -> Void
+    let showHistory: () -> Void
     let showR2Settings: () -> Void
 
     var body: some Commands {
@@ -65,6 +66,9 @@ struct CaptureLabCommands: Commands {
                 showMainWindow()
             }
             .keyboardShortcut("0", modifiers: .command)
+
+            Button(L10n.historyBrowserTitle, action: showHistory)
+                .keyboardShortcut("h", modifiers: [.command, .shift])
         }
 
         CommandGroup(replacing: .saveItem) {
@@ -85,14 +89,26 @@ struct CaptureLabCommands: Commands {
             }
             .keyboardShortcut("u", modifiers: [.command, .shift])
             .disabled(!model.hasImage || model.isUploading)
+
+            Button(L10n.pinImage) {
+                model.pinCurrentCapture()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .disabled(!model.hasImage)
         }
 
         CommandGroup(replacing: .undoRedo) {
-            Button(L10n.undoMarkup) {
+            Button(L10n.undoEdit) {
                 model.undoAnnotation()
             }
             .keyboardShortcut("z", modifiers: .command)
             .disabled(!model.canUndoAnnotation)
+
+            Button(L10n.redoMarkup) {
+                model.redoAnnotation()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!model.canRedoAnnotation)
 
             Button(L10n.clearMarkups) {
                 model.clearAnnotations()
@@ -192,11 +208,13 @@ struct CaptureLabMenuBarView: View {
     @ObservedObject var shortcutStore: CaptureShortcutStore
     @ObservedObject var globalHotKeyController: GlobalHotKeyController
     let showMainWindow: () -> Void
+    let showHistory: () -> Void
     let showShortcutSettings: () -> Void
     let showR2Settings: () -> Void
 
     var body: some View {
         Button(L10n.showCaptureLab, action: showMainWindow)
+        Button(L10n.historyBrowserTitle, action: showHistory)
 
         Divider()
 
@@ -274,6 +292,10 @@ struct CaptureLabMenuBarView: View {
                             model.uploadHistoryItem(item)
                         }
                         .disabled(model.isUploading)
+
+                        Button(L10n.historyPin) {
+                            model.pinHistoryItem(item)
+                        }
                     }
                 }
             }
@@ -298,11 +320,17 @@ struct CaptureLabMenuBarView: View {
             }
         }
 
-        Button(L10n.undoMarkup) {
+        Button(L10n.undoEdit) {
             showMainWindow()
             model.undoAnnotation()
         }
         .disabled(!model.canUndoAnnotation)
+
+        Button(L10n.redoMarkup) {
+            showMainWindow()
+            model.redoAnnotation()
+        }
+        .disabled(!model.canRedoAnnotation)
 
         Button(L10n.clearMarkups) {
             showMainWindow()
@@ -320,6 +348,11 @@ struct CaptureLabMenuBarView: View {
 
         Button(L10n.copyEditedImage) {
             model.copyRenderedImage()
+        }
+        .disabled(!model.hasImage)
+
+        Button(L10n.pinImage) {
+            model.pinCurrentCapture()
         }
         .disabled(!model.hasImage)
 
@@ -363,6 +396,8 @@ private extension CaptureTool {
             return "8"
         case .mosaic:
             return "9"
+        case .crop:
+            return "k"
         }
     }
 }

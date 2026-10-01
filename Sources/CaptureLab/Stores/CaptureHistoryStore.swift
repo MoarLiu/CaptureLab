@@ -195,25 +195,153 @@ final class CaptureHistoryStore: ObservableObject {
         }
     }
 
-    /// Annotation edits keep the original dimensions and metadata. Replacing
-    /// the PNG atomically also updates history actions holding the original
-    /// item. Return nil if retention has removed it while the editor was open.
-    func updateImage(data: Data, for item: CaptureHistoryItem) throws -> CaptureHistoryItem? {
+    /// Reload the durable snapshot under the same lock used by mutations.
+    /// Invalid metadata leaves the previous snapshot and every image intact.
+    func refresh() throws {
+        do {
+            try withExclusiveHistoryLock {
+                let refreshedItems: [CaptureHistoryItem]
+                if fileManager.fileExists(atPath: metadataURL.path) {
+                    refreshedItems = try Self.loadItems(
+                        metadataURL: metadataURL,
+                        fileManager: fileManager,
+                        decoder: decoder
+                    )
+                } else {
+                    refreshedItems = Self.recoverItemsFromDirectory(
+                        historyDirectory: historyDirectory,
+                        fileManager: fileManager
+                    )
+                    do {
+                        try persist(refreshedItems)
+                    } catch {
+                        synchronizeAfterMetadataFailure(fallback: refreshedItems)
+                        throw error
+                    }
+                }
+                items = refreshedItems
+                loadError = nil
+                Self.removeUnreferencedPNGFiles(
+                    retaining: refreshedItems,
+                    historyDirectory: historyDirectory,
+                    fileManager: fileManager
+                )
+            }
+        } catch {
+            let historyError = CaptureHistoryError.metadataLoadFailed(error.localizedDescription)
+            loadError = historyError
+            throw historyError
+        }
+    }
+
+    /// Commit the removal before reclaiming the image. An unsuccessful metadata
+    /// write cannot delete an image that is still part of the durable snapshot.
+    func remove(_ item: CaptureHistoryItem) throws {
+        try withExclusiveHistoryLock {
+            let currentItems = latestItemsFromDisk()
+            let retainedItems = currentItems.filter { $0.id != item.id }
+            guard retainedItems.count != currentItems.count else {
+                items = currentItems
+                return
+            }
+
+            do {
+                try persist(retainedItems)
+            } catch {
+                synchronizeAfterMetadataFailure(fallback: currentItems)
+                throw error
+            }
+            items = retainedItems
+            // Report a cleanup failure even though the metadata removal has
+            // already committed. The caller can synchronize the visible list
+            // while telling the user that the local PNG could not be removed.
+            let retainedFileNames = Set(retainedItems.map(\.fileName))
+            for removedItem in currentItems where removedItem.id == item.id {
+                guard !retainedFileNames.contains(removedItem.fileName),
+                      let fileURL = Self.historyFileURL(
+                        fileName: removedItem.fileName,
+                        historyDirectory: historyDirectory
+                      ), Self.isRegularFile(fileURL) else { continue }
+                try fileManager.removeItem(at: fileURL)
+            }
+        }
+    }
+
+    /// Same-size edits replace the existing PNG atomically. A crop first writes
+    /// a new PNG, then commits its filename and dimensions together, so a failed
+    /// metadata write leaves the previous image and dimensions usable.
+    /// Return nil if retention has removed the item while its editor was open.
+    func updateImage(
+        data: Data,
+        for item: CaptureHistoryItem,
+        pixelSize: CGSize? = nil
+    ) throws -> CaptureHistoryItem? {
         guard !data.isEmpty else {
             throw CaptureHistoryError.imageDataUnavailable
+        }
+        if let pixelSize {
+            guard pixelSize.width.isFinite, pixelSize.height.isFinite,
+                  pixelSize.width >= 1, pixelSize.height >= 1,
+                  pixelSize.width < CGFloat(Int.max), pixelSize.height < CGFloat(Int.max) else {
+                throw CaptureHistoryError.imageDataUnavailable
+            }
         }
 
         return try withExclusiveHistoryLock {
             let currentItems = latestItemsFromDisk()
-            guard let currentItem = currentItems.first(where: {
-                $0.id == item.id && $0.fileName == item.fileName
-            }) else {
+            guard let currentItem = currentItems.first(where: { $0.id == item.id }) else {
+                items = currentItems
                 return nil
             }
-
-            try imageWriter(data, url(for: currentItem))
             items = currentItems
-            return currentItem
+
+            let width = pixelSize.map { Int($0.width) } ?? currentItem.pixelWidth
+            let height = pixelSize.map { Int($0.height) } ?? currentItem.pixelHeight
+            if width == currentItem.pixelWidth, height == currentItem.pixelHeight {
+                let temporaryURL = historyDirectory.appendingPathComponent(".image-update-\(UUID().uuidString).pending")
+                defer { try? fileManager.removeItem(at: temporaryURL) }
+                try imageWriter(data, temporaryURL)
+                // rename replaces the destination in one operation on this
+                // filesystem. A writer that partially writes or reports failure
+                // has touched only the temporary file, never the original PNG.
+                let destination = url(for: currentItem)
+                let result = temporaryURL.path.withCString { source in
+                    destination.path.withCString { Darwin.rename(source, $0) }
+                }
+                guard result == 0 else {
+                    throw Self.posixError(code: errno, operation: "replace history image")
+                }
+                items = currentItems
+                return currentItem
+            }
+
+            var updatedItem = currentItem
+            updatedItem.fileName = "capture-\(Self.fileTimestampFormatter.string(from: currentItem.createdAt))-\(UUID().uuidString)-\(currentItem.id.uuidString).png"
+            updatedItem.pixelWidth = width
+            updatedItem.pixelHeight = height
+            let updatedURL = url(for: updatedItem)
+            do {
+                try imageWriter(data, updatedURL)
+            } catch {
+                try? fileManager.removeItem(at: updatedURL)
+                items = currentItems
+                throw error
+            }
+            let updatedItems = currentItems.map { $0.id == currentItem.id ? updatedItem : $0 }
+            do {
+                try persist(updatedItems)
+            } catch {
+                synchronizeAfterMetadataFailure(fallback: currentItems)
+                throw error
+            }
+
+            items = updatedItems
+            Self.removeUnreferencedPNGFiles(
+                retaining: updatedItems,
+                historyDirectory: historyDirectory,
+                fileManager: fileManager
+            )
+            return updatedItem
         }
     }
 
@@ -236,6 +364,32 @@ final class CaptureHistoryStore: ObservableObject {
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
         let document = MetadataDocument(schemaVersion: 1, items: items)
         try metadataWriter(encoder.encode(document), metadataURL)
+    }
+
+    private func synchronizeAfterMetadataFailure(fallback: [CaptureHistoryItem]) {
+        // A writer may report failure after its atomic replacement committed.
+        // Only a readable durable snapshot permits cleanup; otherwise preserve
+        // all images for later recovery, including a possibly committed crop.
+        guard let documentData = try? Data(contentsOf: metadataURL),
+              let document = try? decoder.decode(MetadataDocument.self, from: documentData),
+              let committedItems = try? Self.loadItems(
+            metadataURL: metadataURL,
+            fileManager: fileManager,
+            decoder: decoder
+        ) else {
+            items = fallback
+            return
+        }
+        items = committedItems
+        Self.removeUnreferencedPNGFiles(
+            // Keep every raw metadata reference during error recovery, even
+            // when loadItems filtered a missing file, duplicate, or overflow.
+            // Filtering must not be mistaken for a successfully committed
+            // deletion or permit removing another referenced PNG.
+            retaining: document.items,
+            historyDirectory: historyDirectory,
+            fileManager: fileManager
+        )
     }
 
     private func latestItemsFromDisk() -> [CaptureHistoryItem] {
@@ -290,6 +444,16 @@ final class CaptureHistoryStore: ObservableObject {
             lock.l_type = Int16(F_UNLCK)
             _ = Darwin.fcntl(descriptor, F_SETLK, &lock)
         }
+        // Every image writer holds this same lock. Once it is acquired, no
+        // other process can still be using an update's temporary file, so a
+        // matching file is an abandoned replacement rather than a live edit.
+        // Reclaim it even when metadata is unreadable; pending files can never
+        // be valid PNG history references. Surface cleanup failures so a later
+        // operation can retry without silently retaining a private screenshot.
+        try removeAbandonedImageUpdates(
+            historyDirectory: historyDirectory,
+            fileManager: fileManager
+        )
         return try operation()
     }
 
@@ -336,25 +500,39 @@ final class CaptureHistoryStore: ObservableObject {
         ) else {
             return []
         }
+        var recoveredIDs = Set<UUID>()
 
         return urls
             .filter {
                 $0.pathExtension.lowercased() == "png"
                     && Self.isRegularFile($0)
             }
-            .compactMap { url in
+            .compactMap { url -> (item: CaptureHistoryItem, modifiedAt: Date)? in
                 let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
                 let createdAt = values?.creationDate ?? values?.contentModificationDate ?? Date.distantPast
                 let image = NSImage(contentsOf: url)
                 let pixelSize = image?.captureLabPixelSize ?? .zero
-                return CaptureHistoryItem(
-                    id: Self.recoveredID(from: url.lastPathComponent) ?? UUID(),
-                    createdAt: createdAt,
-                    fileName: url.lastPathComponent,
-                    pixelWidth: Int(pixelSize.width),
-                    pixelHeight: Int(pixelSize.height)
+                return (
+                    item: CaptureHistoryItem(
+                        id: Self.recoveredID(from: url.lastPathComponent) ?? UUID(),
+                        createdAt: createdAt,
+                        fileName: url.lastPathComponent,
+                        pixelWidth: Int(pixelSize.width),
+                        pixelHeight: Int(pixelSize.height)
+                    ),
+                    modifiedAt: values?.contentModificationDate ?? createdAt
                 )
             }
+            // A crop can leave both revisions after a crash or unreadable
+            // metadata write. Their filenames retain the same capture ID;
+            // choose the most recently written revision before sorting captures
+            // by their recovered creation dates and enforcing retention.
+            .sorted {
+                if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
+                return $0.item.fileName > $1.item.fileName
+            }
+            .filter { recoveredIDs.insert($0.item.id).inserted }
+            .map(\.item)
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(Self.maxItemCount)
             .map { $0 }
@@ -379,6 +557,28 @@ final class CaptureHistoryStore: ObservableObject {
                 continue
             }
             try? fileManager.removeItem(at: url)
+        }
+    }
+
+    private static func removeAbandonedImageUpdates(
+        historyDirectory: URL,
+        fileManager: FileManager
+    ) throws {
+        let urls = try fileManager.contentsOfDirectory(
+            at: historyDirectory,
+            includingPropertiesForKeys: nil
+        )
+        for url in urls {
+            let fileName = url.lastPathComponent
+            let prefix = ".image-update-"
+            let suffix = ".pending"
+            guard fileName.hasPrefix(prefix), fileName.hasSuffix(suffix) else { continue }
+            let uuidText = String(fileName.dropFirst(prefix.count).dropLast(suffix.count))
+            // UUID parsing alone accepts more spellings than the writer emits.
+            // Require its exact canonical format to avoid claiming unknown files.
+            guard let id = UUID(uuidString: uuidText), id.uuidString == uuidText,
+                  isRegularFile(url) else { continue }
+            try fileManager.removeItem(at: url)
         }
     }
 

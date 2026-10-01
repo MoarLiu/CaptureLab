@@ -7,6 +7,12 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
     @Binding var selectedTool: CaptureTool
     @Binding var zoomLevel: CaptureZoomLevel
     var editingSession: CaptureEditingSession = .shared
+    var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
+    var selectedAnnotationID: UUID?
+    var cropSelection: Binding<CGRect?> = .constant(nil)
+    var onSelectionChanged: (UUID?) -> Void = { _ in }
+    var applyCrop: () -> Void = {}
+    var cancelCrop: () -> Void = {}
 
     func makeCoordinator() -> Coordinator {
         Coordinator(annotations: $annotations)
@@ -19,7 +25,9 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         view.selectedTool = selectedTool
         view.zoomLevel = zoomLevel
         view.setEditingSession(editingSession)
+        configureInteractions(view)
         view.onAnnotationsChanged = { [coordinator = context.coordinator] updated in
+            coordinator.lastAnnotationsFromModel = updated
             coordinator.annotations.wrappedValue = updated
         }
         return view
@@ -27,16 +35,42 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
 
     func updateNSView(_ nsView: CaptureAnnotationNSCanvasView, context: Context) {
         context.coordinator.annotations = $annotations
-        nsView.setDocument(document)
-        nsView.annotations = annotations
-        nsView.zoomLevel = zoomLevel
-        nsView.setEditingSession(editingSession)
-        if nsView.selectedTool != selectedTool {
-            nsView.selectedTool = selectedTool
+        nsView.withModelSelectionSynchronization {
+            nsView.setDocument(document)
+            let annotationsChangedExternally = context.coordinator.lastAnnotationsFromModel != annotations
+            if annotationsChangedExternally {
+                nsView.cancelPointerInteraction()
+            }
+            // Selection changes schedule a SwiftUI update before the pointer edit
+            // is committed to the binding at mouseUp. Preserve that native preview
+            // until the gesture ends. Actual model edits (undo/delete), as well as
+            // document/tool/zoom changes, still cancel the gesture and synchronize.
+            if !nsView.hasActivePointerInteraction || nsView.selectedTool != selectedTool || nsView.zoomLevel != zoomLevel {
+                nsView.annotations = annotations
+            }
+            context.coordinator.lastAnnotationsFromModel = annotations
+            nsView.zoomLevel = zoomLevel
+            nsView.setEditingSession(editingSession)
+            if nsView.selectedTool != selectedTool {
+                nsView.selectedTool = selectedTool
+            }
+            // Apply the model's selection after properties that can clear it.
+            configureInteractions(nsView)
+            nsView.onAnnotationsChanged = { [coordinator = context.coordinator] updated in
+                coordinator.lastAnnotationsFromModel = updated
+                coordinator.annotations.wrappedValue = updated
+            }
         }
-        nsView.onAnnotationsChanged = { [coordinator = context.coordinator] updated in
-            coordinator.annotations.wrappedValue = updated
-        }
+    }
+
+    private func configureInteractions(_ view: CaptureAnnotationNSCanvasView) {
+        view.annotationAppearance = annotationAppearance
+        view.synchronizeSelection(selectedAnnotationID)
+        view.cropSelection = cropSelection.wrappedValue
+        view.onSelectionChanged = onSelectionChanged
+        view.onCropSelectionChanged = { selection in cropSelection.wrappedValue = selection }
+        view.onApplyCrop = applyCrop
+        view.onCancelCrop = cancelCrop
     }
 
     static func dismantleNSView(
@@ -51,9 +85,11 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
 
     final class Coordinator {
         var annotations: Binding<[CaptureAnnotation]>
+        var lastAnnotationsFromModel: [CaptureAnnotation]
 
         init(annotations: Binding<[CaptureAnnotation]>) {
             self.annotations = annotations
+            lastAnnotationsFromModel = annotations.wrappedValue
         }
     }
 }
@@ -64,6 +100,9 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     var annotations: [CaptureAnnotation] = [] {
         didSet {
             pruneMosaicCache()
+            if let id = selectedAnnotationID, !annotations.contains(where: { $0.id == id }) {
+                selectedAnnotationID = nil
+            }
             needsDisplay = true
         }
     }
@@ -92,7 +131,18 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     var onAnnotationsChanged: (([CaptureAnnotation]) -> Void)?
 
     private var documentSignature: String?
-    private var selectedAnnotationID: UUID?
+    private var selectedAnnotationID: UUID? {
+        didSet {
+            if !isSynchronizingSelection, oldValue != selectedAnnotationID { onSelectionChanged?(selectedAnnotationID) }
+        }
+    }
+    var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
+    var cropSelection: CGRect? { didSet { needsDisplay = true } }
+    var onSelectionChanged: ((UUID?) -> Void)?
+    var onCropSelectionChanged: ((CGRect?) -> Void)?
+    var onApplyCrop: (() -> Void)?
+    var onCancelCrop: (() -> Void)?
+    private var isSynchronizingSelection = false
     private var interaction: Interaction?
     private var activeTextField: NSTextField?
     private var editingTextAnnotationID: UUID?
@@ -106,6 +156,31 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    var hasActivePointerInteraction: Bool { interaction != nil }
+
+    func cancelPointerInteraction() {
+        interaction = nil
+        needsDisplay = true
+    }
+
+    func synchronizeSelection(_ id: UUID?) {
+        let resolved = id.flatMap { candidate in annotations.contains(where: { $0.id == candidate }) ? candidate : nil }
+        guard selectedAnnotationID != resolved else { return }
+        withModelSelectionSynchronization {
+            selectedAnnotationID = resolved
+        }
+        needsDisplay = true
+    }
+
+    func withModelSelectionSynchronization(_ update: () -> Void) {
+        // Model-to-view synchronization must not feed selection changes back
+        // through a SwiftUI publisher. Keep native pointer callbacks enabled
+        // outside this scope, and preserve an enclosing synchronization scope.
+        let wasSynchronizingSelection = isSynchronizingSelection
+        isSynchronizingSelection = true
+        defer { isSynchronizingSelection = wasSynchronizingSelection }
+        update()
+    }
 
     func setEditingSession(_ session: CaptureEditingSession) {
         guard editingSession !== session else {
@@ -123,6 +198,10 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         editingSession?.unregisterPendingTextCommitter(owner: self)
         editingSession = nil
         onAnnotationsChanged = nil
+        onSelectionChanged = nil
+        onCropSelectionChanged = nil
+        onApplyCrop = nil
+        onCancelCrop = nil
     }
 
     func setDocument(_ document: CaptureDocument) {
@@ -139,8 +218,13 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // AppKit can pass dirty regions outside an unclipped view on newer
+        // macOS versions. Keep the native canvas from painting over toolbars.
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         NSColor.textBackgroundColor.setFill()
-        dirtyRect.fill()
+        dirtyRect.intersection(bounds).fill()
 
         guard let document else {
             return
@@ -164,7 +248,14 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
 
         if let draft = draftAnnotation(in: imageRect) {
-            draw(draft, imageRect: imageRect, document: document, isDraft: true)
+            var styledDraft = draft
+            styledDraft.appearance = annotationAppearance
+            styledDraft = styledDraft.fittingFontBounds(in: document.pixelSize)
+            draw(styledDraft, imageRect: imageRect, document: document, isDraft: true)
+        }
+
+        if selectedTool == .crop {
+            drawCropSelection(in: imageRect)
         }
 
         if let selected = selectedAnnotation,
@@ -191,6 +282,15 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         guard imageRect.contains(point) else {
             selectedAnnotationID = nil
             interaction = nil
+            needsDisplay = true
+            return
+        }
+
+        if selectedTool == .crop {
+            selectedAnnotationID = nil
+            cropSelection = nil
+            onCropSelectionChanged?(nil)
+            interaction = .cropping(start: point, current: point)
             needsDisplay = true
             return
         }
@@ -240,6 +340,9 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let point = CaptureGeometry.clamped(canvasPoint(for: event), to: imageRect)
 
         switch interaction {
+        case .cropping(let start, _):
+            self.interaction = .cropping(start: start, current: point)
+            updateCropSelection(start: start, current: point, imageRect: imageRect)
         case .creating(let kind, let start, _):
             self.interaction = .creating(kind: kind, start: start, current: point)
         case .brushing(var points):
@@ -282,6 +385,8 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let imageRect = imageDisplayRect(for: document.image.size)
 
         switch interaction {
+        case .cropping(let start, let current):
+            updateCropSelection(start: start, current: current, imageRect: imageRect)
         case .creating(let kind, let start, let current):
             commitCreatedAnnotation(kind: kind, start: start, current: current, imageRect: imageRect)
         case .brushing(let points):
@@ -296,6 +401,21 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
 
     override func keyDown(with event: NSEvent) {
+        if selectedTool == .crop {
+            if event.charactersIgnoringModifiers == "\u{1B}" {
+                cropSelection = nil
+                onCropSelectionChanged?(nil)
+                interaction = nil
+                onCancelCrop?()
+                needsDisplay = true
+                return
+            }
+            if event.charactersIgnoringModifiers == "\r" {
+                interaction = nil
+                onApplyCrop?()
+                return
+            }
+        }
         switch event.charactersIgnoringModifiers {
         case "\u{1B}":
             selectedAnnotationID = nil
@@ -396,9 +516,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         guard hasRect || hasLine else {
             return false
         }
-        annotations.append(annotation)
-        selectedAnnotationID = annotation.id
+        var styled = annotation
+        styled.appearance = annotationAppearance
+        if let document { styled = styled.fittingFontBounds(in: document.pixelSize) }
+        annotations.append(styled)
         onAnnotationsChanged?(annotations)
+        selectedAnnotationID = annotation.id
         return true
     }
 
@@ -467,8 +590,43 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         case .brushing(let points):
             let normalized = points.map { CaptureGeometry.normalizedPoint(from: $0, in: imageRect) }
             return .brush(points: normalized)
-        case .moving, .resizingRect, .movingArrowPoint:
+        case .cropping, .moving, .resizingRect, .movingArrowPoint:
             return nil
+        }
+    }
+
+    private func updateCropSelection(start: CGPoint, current: CGPoint, imageRect: CGRect) {
+        let rect = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
+                          width: abs(current.x - start.x), height: abs(current.y - start.y))
+        let selection = rect.width >= 4 && rect.height >= 4
+            ? CaptureGeometry.normalizedRect(from: rect, in: imageRect) : nil
+        cropSelection = selection
+        onCropSelectionChanged?(selection)
+    }
+
+    private func drawCropSelection(in imageRect: CGRect) {
+        guard let selection = cropSelection else { return }
+        let rect = CGRect(x: imageRect.minX + selection.minX * imageRect.width,
+                          y: imageRect.minY + selection.minY * imageRect.height,
+                          width: selection.width * imageRect.width,
+                          height: selection.height * imageRect.height)
+        let mask = NSBezierPath(rect: imageRect)
+        mask.append(NSBezierPath(rect: rect))
+        mask.windingRule = .evenOdd
+        NSColor.black.withAlphaComponent(0.45).setFill()
+        mask.fill()
+        NSColor.white.setStroke()
+        let outline = NSBezierPath(rect: rect)
+        outline.lineWidth = 2
+        outline.stroke()
+        for fraction: CGFloat in [1 / 3, 2 / 3] {
+            let grid = NSBezierPath()
+            grid.move(to: CGPoint(x: rect.minX + rect.width * fraction, y: rect.minY))
+            grid.line(to: CGPoint(x: rect.minX + rect.width * fraction, y: rect.maxY))
+            grid.move(to: CGPoint(x: rect.minX, y: rect.minY + rect.height * fraction))
+            grid.line(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * fraction))
+            grid.lineWidth = 0.5
+            grid.stroke()
         }
     }
 
@@ -539,7 +697,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         isDraft: Bool = false
     ) {
         let alpha: CGFloat = isDraft ? 0.68 : 1
-        let style = annotationStyle(for: document, imageRect: imageRect)
+        let style = annotationStyle(for: document, imageRect: imageRect, appearance: annotation.appearance)
         switch annotation.kind {
         case .arrow:
             drawArrow(points: annotation.points(in: imageRect), style: style, alpha: alpha)
@@ -549,7 +707,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             drawBrush(points: annotation.points(in: imageRect), style: style, alpha: alpha)
         case .rectangle:
             let rect = annotation.rect(in: imageRect)
-            NSColor.systemRed.withAlphaComponent(alpha).setStroke()
+            style.color.withAlphaComponent(alpha).setStroke()
             let path = NSBezierPath(rect: rect)
             path.lineWidth = style.lineWidth
             path.stroke()
@@ -583,7 +741,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let fontSize = style.textFontSize(for: rect)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: NSColor.systemRed.withAlphaComponent(alpha),
+            .foregroundColor: style.color.withAlphaComponent(alpha),
             .paragraphStyle: paragraph
         ]
         let text = annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text
@@ -609,7 +767,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             height: diameter
         )
 
-        NSColor.systemRed.withAlphaComponent(alpha).setFill()
+        style.color.withAlphaComponent(alpha).setFill()
         NSBezierPath(ovalIn: circleRect).fill()
 
         let value = annotation.text.isEmpty ? "1" : annotation.text
@@ -618,7 +776,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .bold),
-            .foregroundColor: NSColor.white.withAlphaComponent(alpha),
+            .foregroundColor: style.counterTextColor.withAlphaComponent(alpha),
             .paragraphStyle: paragraph
         ]
         let textHeight = fontSize * 1.18
@@ -638,7 +796,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         alpha: CGFloat
     ) {
         let rect = annotation.rect(in: imageRect)
-        NSColor.systemYellow.withAlphaComponent(0.42 * alpha).setFill()
+        style.highlightColor.withAlphaComponent(0.42 * alpha).setFill()
         NSBezierPath(
             roundedRect: rect,
             xRadius: style.highlightCornerRadius,
@@ -657,7 +815,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         discardActiveTextEdit()
 
         let imageRect = imageDisplayRect(for: document.image.size)
-        let style = annotationStyle(for: document, imageRect: imageRect)
+        let style = annotationStyle(for: document, imageRect: imageRect, appearance: annotation.appearance)
         let annotationRect = annotation.rect(in: imageRect)
         let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 120, height: 34)
         let field = NSTextField(frame: rect)
@@ -666,7 +824,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             ofSize: style.textFontSize(for: annotationRect),
             weight: .semibold
         )
-        field.textColor = .systemRed
+        field.textColor = style.color
         field.alignment = .center
         field.isBordered = false
         field.drawsBackground = false
@@ -712,6 +870,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             selectedAnnotationID = nil
         } else if let index = annotations.firstIndex(where: { $0.id == id }) {
             annotations[index].text = text
+            if let document { annotations[index] = annotations[index].fittingFontBounds(in: document.pixelSize) }
             selectedAnnotationID = id
         }
 
@@ -760,7 +919,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         path.line(to: end)
         path.line(to: right)
 
-        NSColor.systemRed.withAlphaComponent(alpha).setStroke()
+        style.color.withAlphaComponent(alpha).setStroke()
         path.stroke()
     }
 
@@ -779,7 +938,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         path.move(to: points[0])
         path.line(to: points[1])
 
-        NSColor.systemRed.withAlphaComponent(alpha).setStroke()
+        style.color.withAlphaComponent(alpha).setStroke()
         path.stroke()
     }
 
@@ -799,7 +958,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         for point in points.dropFirst() {
             path.line(to: point)
         }
-        NSColor.systemRed.withAlphaComponent(alpha).setStroke()
+        style.color.withAlphaComponent(alpha).setStroke()
         path.stroke()
     }
 
@@ -1016,11 +1175,13 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
     private func annotationStyle(
         for document: CaptureDocument,
-        imageRect: CGRect
+        imageRect: CGRect,
+        appearance: CaptureAnnotationAppearance = .init()
     ) -> CaptureAnnotationStyle {
         CaptureAnnotationStyle(
             sourcePixelSize: document.pixelSize,
-            renderedImageSize: imageRect.size
+            renderedImageSize: imageRect.size,
+            appearance: appearance
         )
     }
 
@@ -1150,6 +1311,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     private static func signature(for document: CaptureDocument) -> String {
         let pixelSize = document.pixelSize
         return [
+            document.id.uuidString,
             document.sourceURL?.path ?? "capture",
             "\(document.createdAt.timeIntervalSinceReferenceDate)",
             "\(Int(pixelSize.width))x\(Int(pixelSize.height))"
@@ -1171,6 +1333,7 @@ private struct MosaicCacheEntry {
 }
 
 private enum Interaction {
+    case cropping(start: CGPoint, current: CGPoint)
     case creating(kind: CaptureAnnotation.Kind, start: CGPoint, current: CGPoint)
     case brushing(points: [CGPoint])
     case moving(id: UUID, original: CaptureAnnotation, start: CGPoint)

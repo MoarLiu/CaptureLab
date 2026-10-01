@@ -4,6 +4,7 @@ import SwiftUI
 struct CaptureLabRootView: View {
     @ObservedObject var model: CaptureLabViewModel
     @ObservedObject var shortcutStore: CaptureShortcutStore
+    let showHistory: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var isOCRPopoverPresented = false
     @State private var window: NSWindow?
@@ -14,14 +15,19 @@ struct CaptureLabRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             Color.clear
-                .frame(height: 52)
-            Divider()
+                .frame(height: 98)
 
             CaptureCanvasView(
                 document: model.document,
                 annotations: $model.annotations,
                 selectedTool: $model.selectedTool,
                 zoomLevel: $zoomLevel,
+                annotationAppearance: model.annotationAppearance,
+                selectedAnnotationID: model.selectedAnnotationID,
+                cropSelection: $model.cropSelection,
+                onSelectionChanged: model.selectAnnotation,
+                applyCrop: { _ = model.applyCrop() },
+                cancelCrop: model.cancelCrop,
                 captureAction: model.captureRegion,
                 openAction: model.openImage
             )
@@ -41,15 +47,20 @@ struct CaptureLabRootView: View {
         .background(WindowChromeConfigurator())
         .background(CaptureWindowReader(window: $window))
         .overlay(alignment: .top) {
-            EditorTopBarView(
-                model: model,
-                shortcutStore: shortcutStore,
-                copyAction: copyImageFromToolbar,
-                uploadAction: uploadImageFromToolbar,
-                doneAction: finishEditing,
-                isOCRPopoverPresented: $isOCRPopoverPresented,
-                zoomLevel: $zoomLevel
-            )
+            VStack(spacing: 0) {
+                EditorTopBarView(
+                    model: model,
+                    shortcutStore: shortcutStore,
+                    copyAction: copyImageFromToolbar,
+                    uploadAction: uploadImageFromToolbar,
+                    doneAction: finishEditing,
+                    isOCRPopoverPresented: $isOCRPopoverPresented,
+                    zoomLevel: $zoomLevel
+                )
+                Divider()
+                EditorOptionsBarView(model: model, showHistory: showHistory)
+                Divider()
+            }
             .zIndex(100)
         }
         .overlay(alignment: .bottom) {
@@ -61,7 +72,15 @@ struct CaptureLabRootView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
-        .captureLabWindowCloseShortcuts()
+        .captureLabWindowCloseShortcuts(onEscape: {
+            if model.selectedTool == .crop {
+                model.cancelCrop()
+            } else if let window {
+                window.close()
+            } else {
+                dismiss()
+            }
+        })
         .alert(L10n.finishEditingFailedTitle, isPresented: Binding(
             get: { model.finishEditingError != nil },
             set: { if !$0 { model.finishEditingError = nil } }
@@ -131,7 +150,7 @@ private struct EditorTopBarView: View {
                 .frame(width: 88)
 
             HStack(spacing: 6) {
-                ToolbarIconButton(systemImage: "crop", help: L10n.captureRegion, isPrimary: false) {
+                ToolbarIconButton(systemImage: "viewfinder", help: L10n.captureRegion, isPrimary: false) {
                     model.captureRegion()
                 }
                 .disabled(model.isCapturing)
@@ -150,10 +169,6 @@ private struct EditorTopBarView: View {
             if model.hasImage {
                 ToolStripView(model: model)
             }
-
-            Spacer(minLength: 10)
-
-            DocumentToolbarStatusView(model: model)
 
             Spacer(minLength: 10)
 
@@ -211,6 +226,142 @@ private struct EditorTopBarView: View {
         .frame(height: 52)
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.96))
         .background(CaptureWindowDragRegion())
+    }
+}
+
+private struct EditorOptionsBarView: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showHistory: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if model.selectedTool == .crop {
+                cropControls
+            } else {
+                appearanceControls
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 6) {
+                ToolbarIconButton(systemImage: "arrow.uturn.backward", help: L10n.undoEdit, isPrimary: false) {
+                    model.undoAnnotation()
+                }
+                .disabled(!model.canUndoAnnotation)
+
+                ToolbarIconButton(systemImage: "arrow.uturn.forward", help: L10n.redoMarkup, isPrimary: false) {
+                    model.redoAnnotation()
+                }
+                .disabled(!model.canRedoAnnotation)
+
+                Divider().frame(height: 20)
+
+                ToolbarIconButton(systemImage: "pin.fill", help: L10n.pinImage, isPrimary: false) {
+                    model.pinCurrentCapture()
+                }
+                .disabled(!model.hasImage)
+
+                ToolbarIconButton(systemImage: "clock.arrow.circlepath", help: L10n.historyBrowserTitle, isPrimary: false, action: showHistory)
+            }
+        }
+        .font(.system(size: 11))
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var appearanceControls: some View {
+        HStack(spacing: 14) {
+            ColorPicker(L10n.annotationColor, selection: colorBinding, supportsOpacity: false)
+                .fixedSize()
+                .disabled(!model.hasImage || !canEditColor)
+
+            Stepper(value: lineWidthBinding, in: 1...32, step: 1) {
+                Text("\(L10n.annotationLineWidth) \(Int(lineWidthBinding.wrappedValue))")
+                    .monospacedDigit()
+                    .frame(minWidth: 62, alignment: .leading)
+            }
+            .fixedSize()
+            .disabled(!model.hasImage || !canEditLineWidth)
+            .accessibilityLabel(L10n.annotationLineWidth)
+
+            Stepper(value: fontSizeBinding, in: 8...144, step: 1) {
+                Text("\(L10n.annotationFontSize) \(Int(fontSizeBinding.wrappedValue))")
+                    .monospacedDigit()
+                    .frame(minWidth: 60, alignment: .leading)
+            }
+            .fixedSize()
+            .disabled(!model.hasImage || !canEditFontSize)
+            .accessibilityLabel(L10n.annotationFontSize)
+
+            Text(model.selectedAnnotationID == nil ? L10n.newAnnotationAppearanceHint : L10n.selectedAnnotationAppearanceHint)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(L10n.annotationAppearanceHelp)
+
+            if model.hasImage {
+                Text(model.documentTitle)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(model.documentTitle)
+            }
+        }
+    }
+
+    private var cropControls: some View {
+        HStack(spacing: 12) {
+            Label(L10n.cropPrompt, systemImage: "crop")
+                .foregroundStyle(.secondary)
+                .help(L10n.cropHelp)
+
+            if let selection = model.cropSelection,
+               let document = model.document,
+               let rect = CaptureImageCrop.pixelRect(selection, pixelSize: document.pixelSize) {
+                Text(L10n.cropPixelSize(width: Int(rect.width), height: Int(rect.height)))
+                    .monospacedDigit()
+            }
+
+            Button(L10n.cropApply) { _ = model.applyCrop() }
+                .disabled(!model.canApplyCrop)
+                .help(L10n.cropHelp)
+
+            Button(L10n.cancel, action: model.cancelCrop)
+
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+                .help(L10n.cropHelp)
+        }
+    }
+
+    private var editingTool: CaptureTool {
+        guard let annotation = model.annotations.first(where: { $0.id == model.selectedAnnotationID }) else {
+            return model.selectedTool
+        }
+        return CaptureTool(rawValue: annotation.kind.rawValue) ?? model.selectedTool
+    }
+
+    private var canEditColor: Bool { editingTool != .mosaic && editingTool != .crop }
+    private var canEditLineWidth: Bool {
+        [.select, .arrow, .line, .rectangle, .brush].contains(editingTool)
+    }
+    private var canEditFontSize: Bool { [.select, .text, .counter].contains(editingTool) }
+
+    private var colorBinding: Binding<Color> {
+        Binding(
+            get: {
+                Color(nsColor: model.annotationAppearance.color?.nsColor ?? (editingTool == .highlight ? .systemYellow : .systemRed))
+            },
+            set: { model.annotationAppearance.color = CaptureAnnotationColor(NSColor($0)) }
+        )
+    }
+
+    private var lineWidthBinding: Binding<CGFloat> {
+        Binding(get: { model.annotationAppearance.lineWidth ?? 4 }, set: { model.annotationAppearance.lineWidth = $0 })
+    }
+
+    private var fontSizeBinding: Binding<CGFloat> {
+        Binding(get: { model.annotationAppearance.fontSize ?? 24 }, set: { model.annotationAppearance.fontSize = $0 })
     }
 }
 
@@ -421,6 +572,7 @@ private struct ToolbarIconButton: View {
         }
         .buttonStyle(EditorRoundButtonStyle(isPrimary: isPrimary))
         .help(help)
+        .accessibilityLabel(help)
     }
 }
 
@@ -446,6 +598,7 @@ private struct ToolbarToolButton: View {
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .help(tool.title)
+        .accessibilityLabel(tool.title)
     }
 }
 

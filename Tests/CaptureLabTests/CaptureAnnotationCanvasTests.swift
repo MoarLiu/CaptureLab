@@ -5,6 +5,74 @@ import XCTest
 
 @MainActor
 final class CaptureAnnotationCanvasTests: XCTestCase {
+    func testCropDragSelectsPixelsWithoutCreatingAnAnnotationAndEscapeCancels() throws {
+        let harness = CanvasHarness(tool: .crop)
+        defer { harness.close() }
+        var selection: CGRect?
+        var didCancel = false
+        harness.view.onCropSelectionChanged = { selection = $0 }
+        harness.view.onCancelCrop = { didCancel = true }
+        harness.drag(from: CGPoint(x: 160, y: 120), to: CGPoint(x: 360, y: 260))
+        let rect = try XCTUnwrap(selection)
+        XCTAssertEqual(rect.minX, 0.125, accuracy: 0.001)
+        XCTAssertEqual(rect.minY, 0.125, accuracy: 0.001)
+        XCTAssertEqual(rect.width, 0.3125, accuracy: 0.001)
+        XCTAssertTrue(harness.view.annotations.isEmpty)
+        harness.keyDown(characters: "\u{1B}", keyCode: 53)
+        XCTAssertNil(selection)
+        XCTAssertTrue(didCancel)
+    }
+
+    func testNewStyledAnnotationKeepsAppearanceAfterMoving() throws {
+        let harness = CanvasHarness(tool: .rectangle)
+        defer { harness.close() }
+        let appearance = CaptureAnnotationAppearance(color: CaptureAnnotationColor(.systemBlue), lineWidth: 9, fontSize: 32)
+        harness.view.annotationAppearance = appearance
+        harness.drag(from: CGPoint(x: 160, y: 120), to: CGPoint(x: 360, y: 260))
+        XCTAssertEqual(harness.view.annotations.first?.appearance, appearance)
+        harness.drag(from: CGPoint(x: 250, y: 200), to: CGPoint(x: 280, y: 230))
+        XCTAssertEqual(harness.view.annotations.first?.appearance, appearance)
+    }
+
+    func testExternalSelectionResetLetsTheSameAnnotationBeSelectedAgain() throws {
+        let harness = CanvasHarness(tool: .rectangle)
+        defer { harness.close() }
+        var selections: [UUID?] = []
+        harness.view.onSelectionChanged = { selections.append($0) }
+        harness.drag(from: CGPoint(x: 160, y: 120), to: CGPoint(x: 360, y: 260))
+        let id = try XCTUnwrap(harness.view.annotations.first?.id)
+        XCTAssertEqual(selections, [id])
+        harness.view.selectedTool = .select
+        harness.view.synchronizeSelection(nil)
+        XCTAssertEqual(selections, [id], "Downstream selection synchronization must not publish a second edit.")
+        harness.click(at: CGPoint(x: 250, y: 200))
+        XCTAssertEqual(selections, [id, id])
+    }
+
+    func testNestedModelSelectionSynchronizationPreservesScopeAndNativeEventsStillPublish() {
+        let harness = CanvasHarness(tool: .select)
+        defer { harness.close() }
+        let annotation = CaptureAnnotation(kind: .rectangle,
+            normalizedRect: CGRect(x: 0.125, y: 0.125, width: 0.3125, height: 0.2917))
+        harness.view.annotations = [annotation]
+        var selections: [UUID?] = []
+        harness.view.onSelectionChanged = { selections.append($0) }
+
+        harness.view.withModelSelectionSynchronization {
+            harness.view.synchronizeSelection(annotation.id)
+            // synchronizeSelection opens its own scope. Pruning afterwards
+            // must remain suppressed by the enclosing model update scope.
+            harness.view.annotations = []
+        }
+        XCTAssertTrue(selections.isEmpty)
+
+        harness.view.annotations = [annotation]
+        harness.click(at: CGPoint(x: 250, y: 200))
+        XCTAssertEqual(selections, [annotation.id])
+        harness.keyDown(characters: "\u{7F}", keyCode: 51)
+        XCTAssertEqual(selections, [annotation.id, nil])
+    }
+
     func testArrowCanBeCreatedAndEndpointDragged() {
         let harness = CanvasHarness(tool: .arrow)
         defer { harness.close() }

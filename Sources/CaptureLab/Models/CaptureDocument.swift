@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 
 struct CaptureDocument {
+    var id = UUID()
     var image: NSImage
     var sourceURL: URL?
     var createdAt: Date
@@ -24,7 +25,7 @@ struct CaptureDocument {
     }()
 }
 
-struct OCRResult: Equatable {
+struct OCRResult: Equatable, Sendable {
     var text: String
     var lineCount: Int
     var createdAt: Date

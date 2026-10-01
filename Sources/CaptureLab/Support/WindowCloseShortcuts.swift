@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 extension View {
-    func captureLabWindowCloseShortcuts() -> some View {
-        background(WindowCloseShortcutInstaller())
+    func captureLabWindowCloseShortcuts(onEscape: (@MainActor () -> Void)? = nil) -> some View {
+        background(WindowCloseShortcutInstaller(onEscape: onEscape))
     }
 }
 
@@ -31,18 +31,19 @@ extension NSAlert {
 }
 
 private struct WindowCloseShortcutInstaller: NSViewRepresentable {
+    var onEscape: (@MainActor () -> Void)?
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        context.coordinator.attach(to: view)
+        context.coordinator.attach(to: view, onEscape: onEscape)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.attach(to: nsView)
+        context.coordinator.attach(to: nsView, onEscape: onEscape)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -53,9 +54,11 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
     final class Coordinator {
         private weak var view: NSView?
         private var monitor: Any?
+        private var onEscape: (@MainActor () -> Void)?
 
-        func attach(to view: NSView) {
+        func attach(to view: NSView, onEscape: (@MainActor () -> Void)?) {
             self.view = view
+            self.onEscape = onEscape
             guard monitor == nil else {
                 return
             }
@@ -63,6 +66,7 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 let eventWindowID = event.window.map(ObjectIdentifier.init)
                 let matchesCloseShortcut = CaptureLabCloseShortcut.matches(event)
+                let isEscape = event.keyCode == 53
                 // AppKit invokes local event monitors on the application thread.
                 // State that contract explicitly so Swift 6 can preserve the
                 // synchronous close-and-consume behavior without actor leakage.
@@ -75,7 +79,11 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
                         return false
                     }
 
-                    window.close()
+                    if isEscape, let onEscape = self.onEscape {
+                        onEscape()
+                    } else {
+                        window.close()
+                    }
                     return true
                 }
                 return didClose ? nil : event

@@ -64,22 +64,42 @@ final class CaptureLabViewModel: ObservableObject {
     typealias ImageRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> NSImage?
     typealias PNGDataRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> Data?
     typealias SaveDestinationOperation = @MainActor (_ suggestedFileName: String) -> URL?
+    typealias PinOperation = @MainActor (NSImage, String) -> Void
     typealias FailurePresentationOperation = @MainActor (_ title: String, _ message: String) -> Void
 
     @Published private(set) var document: CaptureDocument?
     @Published var annotations: [CaptureAnnotation] = [] {
         didSet {
             trackAnnotationChange(from: oldValue, to: annotations)
+            if let id = selectedAnnotationID, !annotations.contains(where: { $0.id == id }) {
+                selectedAnnotationID = nil
+            }
         }
     }
-    @Published var selectedTool: CaptureTool = .select
+    @Published var selectedTool: CaptureTool = .select {
+        didSet {
+            if selectedTool != .crop { cropSelection = nil }
+            if let annotation = annotations.first(where: { $0.id == selectedAnnotationID }),
+               selectedTool != .select, selectedTool.annotationKind != annotation.kind {
+                selectedAnnotationID = nil
+            }
+        }
+    }
+    @Published var annotationAppearance: CaptureAnnotationAppearance = .editorDefault {
+        didSet { applySelectedAnnotationAppearance() }
+    }
+    @Published private(set) var selectedAnnotationID: UUID?
+    @Published var cropSelection: CGRect?
+    @Published private(set) var historyRevision = UUID()
     @Published var ocrText = ""
     @Published private(set) var isCapturing = false
     @Published private(set) var isRecognizingText = false
     @Published private(set) var statusMessage = L10n.ready
     @Published private(set) var isCheckingForUpdates = false
     @Published private(set) var isUploading = false
-    @Published private(set) var historyItems: [CaptureHistoryItem]
+    @Published private(set) var historyItems: [CaptureHistoryItem] {
+        didSet { historyRevision = UUID() }
+    }
     @Published var finishEditingError: String?
 
     private let updateCheckService = UpdateCheckService()
@@ -95,7 +115,14 @@ final class CaptureLabViewModel: ObservableObject {
     private let pngDataRenderingOperation: PNGDataRenderingOperation
     private let saveDestinationOperation: SaveDestinationOperation
     private let failurePresentationOperation: FailurePresentationOperation
-    private var annotationUndoStack: [[CaptureAnnotation]] = []
+    private struct EditSnapshot {
+        var document: CaptureDocument?
+        var annotations: [CaptureAnnotation]
+    }
+    @Published private var annotationUndoStack: [EditSnapshot] = []
+    @Published private var annotationRedoStack: [EditSnapshot] = []
+    private let pinOperation: PinOperation
+    private var isSynchronizingAppearance = false
     private var isApplyingAnnotationHistory = false
     private let maxUndoDepth = 60
     private var documentGeneration: UInt64 = 0
@@ -117,6 +144,7 @@ final class CaptureLabViewModel: ObservableObject {
         self.pngDataRenderingOperation = Self.defaultPNGDataRenderingOperation
         self.saveDestinationOperation = Self.defaultSaveDestinationOperation
         self.failurePresentationOperation = Self.defaultFailurePresentationOperation
+        self.pinOperation = Self.defaultPinOperation
         self.historyItems = historyStore.items
         reportHistoryLoadFailureIfNeeded()
     }
@@ -133,6 +161,7 @@ final class CaptureLabViewModel: ObservableObject {
         self.pngDataRenderingOperation = Self.defaultPNGDataRenderingOperation
         self.saveDestinationOperation = Self.defaultSaveDestinationOperation
         self.failurePresentationOperation = Self.defaultFailurePresentationOperation
+        self.pinOperation = Self.defaultPinOperation
         self.historyItems = historyStore.items
         reportHistoryLoadFailureIfNeeded()
     }
@@ -148,7 +177,8 @@ final class CaptureLabViewModel: ObservableObject {
         uploadOperation: @escaping UploadOperation = CaptureLabViewModel.defaultUploadOperation,
         imageRenderingOperation: @escaping ImageRenderingOperation = CaptureLabViewModel.defaultImageRenderingOperation,
         pngDataRenderingOperation: @escaping PNGDataRenderingOperation = CaptureLabViewModel.defaultPNGDataRenderingOperation,
-        saveDestinationOperation: @escaping SaveDestinationOperation = CaptureLabViewModel.defaultSaveDestinationOperation
+        saveDestinationOperation: @escaping SaveDestinationOperation = CaptureLabViewModel.defaultSaveDestinationOperation,
+        pinOperation: @escaping PinOperation = CaptureLabViewModel.defaultPinOperation
     ) {
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = historyStore
@@ -161,6 +191,7 @@ final class CaptureLabViewModel: ObservableObject {
         self.pngDataRenderingOperation = pngDataRenderingOperation
         self.saveDestinationOperation = saveDestinationOperation
         self.failurePresentationOperation = failurePresentationOperation
+        self.pinOperation = pinOperation
         self.historyItems = historyStore.items
         reportHistoryLoadFailureIfNeeded()
     }
@@ -171,6 +202,116 @@ final class CaptureLabViewModel: ObservableObject {
 
     var canUndoAnnotation: Bool {
         !annotationUndoStack.isEmpty
+    }
+
+    var canRedoAnnotation: Bool { !annotationRedoStack.isEmpty }
+
+    var canApplyCrop: Bool {
+        guard let document, let cropSelection,
+              let rect = CaptureImageCrop.pixelRect(cropSelection, pixelSize: document.pixelSize) else { return false }
+        return rect.width >= 1 && rect.height >= 1
+    }
+
+    func selectAnnotation(_ id: UUID?) {
+        guard let id, let annotation = annotations.first(where: { $0.id == id }) else {
+            if selectedAnnotationID != nil { selectedAnnotationID = nil }
+            return
+        }
+        selectedAnnotationID = id
+        isSynchronizingAppearance = true
+        annotationAppearance = annotation.appearance
+        isSynchronizingAppearance = false
+    }
+
+    private func applySelectedAnnotationAppearance() {
+        guard !isSynchronizingAppearance else { return }
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let selectedAnnotationID,
+              let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }) else { return }
+        var updated = annotations
+        let fontChanged = updated[index].appearance.fontSize != annotationAppearance.fontSize
+        updated[index].appearance = annotationAppearance
+        if fontChanged, let document {
+            updated[index] = updated[index].fittingFontBounds(in: document.pixelSize)
+        }
+        annotations = updated
+    }
+
+    @discardableResult
+    func applyCrop() -> Bool {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document, let cropSelection, canApplyCrop else { return false }
+        // Crop the rendered pixels so redactions cannot be lost at a crop boundary.
+        // The undo snapshot keeps the original image and editable annotations.
+        guard let rendered = imageRenderingOperation(document.image, annotations),
+              let cropped = CaptureImageCrop.crop(rendered, selection: cropSelection) else {
+            reportFailure(L10n.imageExportFailed, title: L10n.cropFailedTitle)
+            return false
+        }
+        appendUndo(EditSnapshot(document: document, annotations: annotations))
+        annotationRedoStack.removeAll()
+        invalidateDocumentActivities()
+        isApplyingAnnotationHistory = true
+        self.document = CaptureDocument(image: cropped, sourceURL: document.sourceURL, createdAt: document.createdAt)
+        annotations = []
+        isApplyingAnnotationHistory = false
+        selectedAnnotationID = nil
+        self.cropSelection = nil
+        selectedTool = .select
+        ocrText = ""
+        statusMessage = L10n.imageCropped
+        return true
+    }
+
+    func cancelCrop() {
+        cropSelection = nil
+        selectedTool = .select
+    }
+
+    func historyURL(for item: CaptureHistoryItem) -> URL { historyStore.url(for: item) }
+
+    func refreshHistory() {
+        do {
+            try historyStore.refresh()
+            historyItems = historyStore.items
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.historyLoadFailedTitle)
+        }
+    }
+
+    func deleteHistoryItem(_ item: CaptureHistoryItem) {
+        do {
+            try historyStore.remove(item)
+            historyItems = historyStore.items
+            if currentHistoryItem?.id == item.id { currentHistoryItem = nil }
+        } catch {
+            historyItems = historyStore.items
+            reportFailure(error.localizedDescription, title: L10n.historyDeleteFailedTitle)
+        }
+    }
+
+    func pinCurrentCapture() {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document else { return }
+        guard let rendered = imageRenderingOperation(document.image, annotations) else {
+            reportFailure(L10n.imageExportFailed, title: L10n.pinFailedTitle)
+            return
+        }
+        pinOperation(rendered, document.displayTitle)
+    }
+
+    func pinHistoryItem(_ item: CaptureHistoryItem) {
+        do {
+            let data = try historyStore.data(for: item)
+            guard let image = NSImage(data: data), image.isValid else { throw CaptureLabError.imageLoadFailed }
+            pinOperation(image, item.displayTitle)
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.pinFailedTitle)
+        }
+    }
+
+    static func defaultPinOperation(_ image: NSImage, title: String) {
+        CapturePinController.shared.pin(image: image, title: title)
     }
 
     var documentTitle: String {
@@ -390,7 +531,7 @@ final class CaptureLabViewModel: ObservableObject {
 
         do {
             if let currentHistoryItem,
-               let updated = try historyStore.updateImage(data: data, for: currentHistoryItem) {
+               let updated = try historyStore.updateImage(data: data, for: currentHistoryItem, pixelSize: document.pixelSize) {
                 self.currentHistoryItem = updated
             } else {
                 // Imported images, failed initial history writes, and captures
@@ -403,6 +544,7 @@ final class CaptureLabViewModel: ObservableObject {
             }
             historyItems = historyStore.items
         } catch {
+            historyItems = historyStore.items
             statusMessage = error.localizedDescription
             finishEditingError = statusMessage
             NSSound.beep()
@@ -591,13 +733,38 @@ final class CaptureLabViewModel: ObservableObject {
 
     func undoAnnotation() {
         CaptureEditingSession.commitPendingTextEdits()
-        guard let previousAnnotations = annotationUndoStack.popLast() else {
-            return
+        guard let snapshot = annotationUndoStack.popLast() else { return }
+        annotationRedoStack.append(EditSnapshot(document: document, annotations: annotations))
+        restore(snapshot)
+        statusMessage = L10n.editUndone
+    }
+
+    func redoAnnotation() {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let snapshot = annotationRedoStack.popLast() else { return }
+        appendUndo(EditSnapshot(document: document, annotations: annotations))
+        restore(snapshot)
+        statusMessage = L10n.editRedone
+    }
+
+    private func restore(_ snapshot: EditSnapshot) {
+        // OCR reads the source image, and uploads already own their rendered
+        // bytes. Annotation-only history changes do not invalidate either.
+        // Cropping creates a new document ID, including when undoing a crop.
+        let sourceChanged = document?.id != snapshot.document?.id
+        if sourceChanged {
+            invalidateDocumentActivities()
         }
         isApplyingAnnotationHistory = true
-        annotations = previousAnnotations
+        document = snapshot.document
+        annotations = snapshot.annotations
         isApplyingAnnotationHistory = false
-        statusMessage = L10n.markupUndone
+        selectedAnnotationID = nil
+        cropSelection = nil
+        selectedTool = .select
+        if sourceChanged {
+            ocrText = ""
+        }
     }
 
     func clearAnnotations() {
@@ -680,7 +847,12 @@ final class CaptureLabViewModel: ObservableObject {
             return
         }
 
-        annotationUndoStack.append(oldValue)
+        appendUndo(EditSnapshot(document: document, annotations: oldValue))
+        annotationRedoStack.removeAll()
+    }
+
+    private func appendUndo(_ snapshot: EditSnapshot) {
+        annotationUndoStack.append(snapshot)
         if annotationUndoStack.count > maxUndoDepth {
             annotationUndoStack.removeFirst(annotationUndoStack.count - maxUndoDepth)
         }
@@ -691,6 +863,10 @@ final class CaptureLabViewModel: ObservableObject {
         annotations.removeAll()
         isApplyingAnnotationHistory = false
         annotationUndoStack.removeAll()
+        annotationRedoStack.removeAll()
+        selectedAnnotationID = nil
+        cropSelection = nil
+        if selectedTool == .crop { selectedTool = .select }
     }
 
     private func invalidateDocumentActivities() {
@@ -768,7 +944,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.3"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.5.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

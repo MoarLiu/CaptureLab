@@ -345,10 +345,11 @@ final class CaptureLabViewModelTests: XCTestCase {
         let fixture = try HistoryFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }
         let historyStore = CaptureHistoryStore(environment: fixture.environment)
-        let imageData = try XCTUnwrap(Self.fixtureImage().captureLabPNGData())
+        let sourceImage = Self.fixtureImage()
+        let imageData = try XCTUnwrap(sourceImage.captureLabPNGData())
         let item = try historyStore.record(
             data: imageData,
-            pixelSize: CGSize(width: 64, height: 48),
+            pixelSize: sourceImage.captureLabPixelSize,
             createdAt: Date(timeIntervalSinceReferenceDate: 0)
         )
         let pasteboard = NSPasteboard(
