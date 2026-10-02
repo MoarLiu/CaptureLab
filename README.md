@@ -14,8 +14,10 @@ Current features:
 - image preview with Fit, 50%, 100%, and 200% zoom
 - arrow, line, rectangle, counter, brush, text, text highlight, and mosaic markup
 - annotation color, line width, and font size controls for new and selected markup
-- crop selection with source-pixel dimensions, Enter to apply, and Esc to cancel
-- undo and redo for annotation edits and crops
+- editable `.capturelab` projects with open/save, history restoration, and recovery before closing or replacing the document
+- non-destructive crops with aspect-ratio presets, exact canvas-pixel dimensions, selection moving/resizing, and edge snapping
+- output resizing by dimensions or percentage, aspect-ratio locking, 90-degree rotation, and horizontal/vertical flips
+- undo and redo for annotations, crops, rotations, flips, and output dimensions
 - floating pinned screenshots with resize, opacity, click-through locking, and arrow-key movement
 - optional quick-access overlay with per-capture copy, save, edit, pin, upload, and drag actions
 - image paste and drag-in import, plus PNG file-promise drag-out from editor, history, and overlay
@@ -25,10 +27,24 @@ Current features:
 - direct text selection and copy, multiple QR-code results, and recognition
   languages selected from those supported by the current macOS version
 
-Cropping merges the current annotations into the cropped pixels, including
-mosaic redactions. Undo restores the original image and editable annotations;
-redo reapplies the crop. Crop dimensions and exported PNGs use the source pixels,
-including when the preview is scaled or the image is captured on a Retina screen.
+Save Editable Project (Command-Shift-S, or the Project menu) stores the original
+image, annotations, crop, and transforms in one `.capturelab` file. Open Project
+(Command-Shift-O), Open Image, Finder, and file drag-in can reopen it. Projects
+include the original pixels under redactions; use Save Edited Image, Copy,
+PNG drag-out, or R2 upload to share only the composited result.
+
+New edited history retains editable objects. Older PNG history opens as a single
+background image. Undo history is not stored in project files; new edits after
+reopening still support undo and redo. Before replacement, editor close, or quit,
+the current project and preview are saved together. A failed write keeps the
+editor open for retry. Concurrent editors preserve separate versions on conflict.
+
+The image-adjustment menu beside Undo controls output dimensions, rotation, and
+flips. Crop dimensions refer to canvas pixels before output scaling. Cropping
+preserves original objects, including clipped portions; ordinary output shows
+only the crop and keeps redactions. Image transformations and output resizing
+share the same composition for preview, copy, save, pin, drag-out, and upload.
+
 Pinned screenshots keep a snapshot of the edited image and close independently
 with Esc or Command-W. CaptureLab temporarily hides its windows, including pins,
 while taking a new screenshot.
@@ -42,7 +58,7 @@ pauses during hovering, dragging, and capture; the menu bar can hide overlays or
 restore the most recently closed one.
 
 Paste Image and drag-in open independent images. Before replacement, edited or
-imported content is preserved as a rendered history image; a failed save keeps
+imported content is preserved as an editable project and preview; a failed save keeps
 the current editor intact. Drag the hand icon to deliver the rendered PNG to a
 receiving app. Text fields retain their normal Command-V behavior. Unlock All
 Pins and Close All Pins stay available in the menu bar while pins are locked;
@@ -50,7 +66,8 @@ arrow keys move an unlocked pin by one point, or ten with Shift.
 
 Retention changes preview the affected capture count before deletion and require
 a new confirmation if concurrent captures would expand that deletion set. Time
-limits are enforced on startup, capture, and history refresh. Existing exported
+limits are enforced on startup, capture, and history refresh; edited entries use
+their last edit time. Preview and project resources are cleaned up together. Existing exported
 files are independent of history cleanup.
 
 Build and run:

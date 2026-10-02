@@ -102,7 +102,7 @@ enum L10n {
     static var cropApply: String { text(en: "Apply Crop", zh: "应用裁剪") }
     static var cropPrompt: String { text(en: "Drag to select the crop area", zh: "拖动框选裁剪区域") }
     static var cropHelp: String {
-        text(en: "Crop merges existing markups into the image. Undo restores the original image and editable markups. Return applies; Esc cancels.", zh: "裁剪会合并现有标注；撤销可恢复原图和可编辑标注。Return 应用，Esc 取消。")
+        text(en: "Crop keeps markups editable. Drag inside to move, drag a corner to resize. Dimensions use canvas pixels before output scaling. Return applies; Esc cancels.", zh: "裁剪后标注仍可编辑。拖动内部移动选区，拖角调整大小。尺寸使用输出缩放前的画布像素。Return 应用，Esc 取消。")
     }
     static func cropPixelSize(width: Int, height: Int) -> String {
         text(en: "\(width) × \(height) px", zh: "\(width) × \(height) 像素")

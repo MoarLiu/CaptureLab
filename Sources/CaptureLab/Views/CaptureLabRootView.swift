@@ -27,6 +27,7 @@ struct CaptureLabRootView: View {
                 selectedAnnotationID: model.selectedAnnotationID,
                 cropSelection: $model.cropSelection,
                 onSelectionChanged: model.selectAnnotation,
+                cropPreset: model.cropPreset,
                 applyCrop: { _ = model.applyCrop() },
                 cancelCrop: model.cancelCrop,
                 captureAction: model.captureRegion,
@@ -38,6 +39,11 @@ struct CaptureLabRootView: View {
             HStack(spacing: 12) {
                 Text(model.statusMessage).help(model.statusMessage)
                 Spacer(minLength: 8)
+                Menu(L10n.text(en: "Project", zh: "项目")) {
+                    Button(L10n.text(en: "Open Project…", zh: "打开项目…"), action: model.openProject)
+                    Button(L10n.text(en: "Save Editable Project…", zh: "保存可编辑项目…"), action: model.saveProject)
+                        .disabled(!model.hasImage)
+                }.fixedSize().disabled(model.isCapturing)
                 Button(L10n.pasteImage, action: model.pasteImage)
                     .disabled(model.isCapturing)
                 CaptureImageDragSource(snapshot: model.renderedSnapshot, isEnabled: model.hasImage)
@@ -55,6 +61,7 @@ struct CaptureLabRootView: View {
         .background(CaptureImagePasteInstaller(paste: model.pasteImage))
         .onDrop(of: [UTType.fileURL, .image], isTargeted: nil, perform: model.importDroppedImage)
         .background(CaptureWindowReader(window: $window))
+        .background(CaptureDocumentCloseGuard(model: model))
         .overlay(alignment: .top) {
             VStack(spacing: 0) {
                 EditorTopBarView(
@@ -85,8 +92,8 @@ struct CaptureLabRootView: View {
             if model.selectedTool == .crop {
                 model.cancelCrop()
             } else if let window {
-                window.close()
-            } else {
+                window.performClose(nil)
+            } else if model.preserveDocumentBeforeReplacement() {
                 dismiss()
             }
         })
@@ -237,6 +244,8 @@ private struct EditorTopBarView: View {
 private struct EditorOptionsBarView: View {
     @ObservedObject var model: CaptureLabViewModel
     let showHistory: () -> Void
+    @State private var showSize = false
+    @State private var showCropSize = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -249,6 +258,17 @@ private struct EditorOptionsBarView: View {
             Spacer(minLength: 8)
 
             HStack(spacing: 6) {
+                Menu {
+                    Button(L10n.text(en: "Output Size…", zh: "输出尺寸…")) { showSize = true }
+                    Button(L10n.text(en: "Rotate 90° Clockwise", zh: "顺时针旋转 90°")) { model.adjustImage(.rotateClockwise) }
+                    Button(L10n.text(en: "Flip Horizontally", zh: "水平翻转")) { model.adjustImage(.flipHorizontal) }
+                    Button(L10n.text(en: "Flip Vertically", zh: "垂直翻转")) { model.adjustImage(.flipVertical) }
+                } label: { Image(systemName: "rotate.right") }
+                .menuStyle(.borderlessButton).frame(width: 28)
+                .help(L10n.text(en: "Image adjustments", zh: "图片调整"))
+                .accessibilityLabel(L10n.text(en: "Image adjustments", zh: "图片调整"))
+                .disabled(!model.hasImage)
+                .sheet(isPresented: $showSize) { CaptureImageAdjustmentView(model: model) }
                 ToolbarIconButton(systemImage: "arrow.uturn.backward", help: L10n.undoEdit, isPrimary: false) {
                     model.undoAnnotation()
                 }
@@ -316,13 +336,16 @@ private struct EditorOptionsBarView: View {
 
     private var cropControls: some View {
         HStack(spacing: 12) {
-            Label(L10n.cropPrompt, systemImage: "crop")
-                .foregroundStyle(.secondary)
-                .help(L10n.cropHelp)
+            Picker(L10n.text(en: "Ratio", zh: "比例"), selection: $model.cropPreset) {
+                ForEach(CaptureCropPreset.allCases) { preset in Text(preset.title).tag(preset) }
+            }.frame(width: 140)
+            .onChange(of: model.cropPreset) { _ in model.constrainCropSelection() }
+            Button(L10n.text(en: "Exact Size…", zh: "精确尺寸…")) { showCropSize = true }
+                .sheet(isPresented: $showCropSize) { CaptureImageAdjustmentView(model: model, isCrop: true) }
 
             if let selection = model.cropSelection,
                let document = model.document,
-               let rect = CaptureImageCrop.pixelRect(selection, pixelSize: document.pixelSize) {
+               let rect = CaptureImageCrop.pixelRect(selection, pixelSize: document.canvasSize) {
                 Text(L10n.cropPixelSize(width: Int(rect.width), height: Int(rect.height)))
                     .monospacedDigit()
             }

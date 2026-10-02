@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.8.0 - 2026-10-02
+
+- Added self-contained `.capturelab` projects with editable source images,
+  annotations, canvas geometry, and output size. Open/save, Finder file
+  association, and file drag-in are supported; ordinary sharing emits PNG only.
+- History now saves a preview and editable project together and restores objects
+  after restart. Legacy PNG history remains usable as a background image.
+- Added output resizing by dimensions or percentage, aspect-ratio locking,
+  90-degree rotation, horizontal/vertical flips, and non-destructive cropping.
+- Crop selections support ratio presets, exact dimensions, moving/resizing, and
+  edge snapping. Resizing filters only pixels inside the chosen crop.
+- Added recovery before editor close, quit, and document replacement. Failed
+  writes keep the editor open; concurrent edits retain separate versions.
+  Retention cleans preview/project pairs and uses the latest edit time.
+- Unified image-import and project resource limits, and validated project
+  encoding against the same size constraints used when opening projects.
+
+Validation: 290 tests pass with strict concurrency and warnings as errors.
+Clean ARM64 and x86_64 Release builds target macOS 13. Both DMGs pass mounted
+bundle, architecture, code-signature, privacy, checksum, and update-signature
+verification. The installed ARM build passes a 45-second startup smoke check.
+
+Artifacts:
+
+- `CaptureLab-0.8.0-macos-arm64.dmg`
+- SHA-256: `62af953d7b82bd89f00b778fd4dc8f96cddc2fd93dd0d55627559c2d6a22f8bd`
+- Matching `.dmg.sha256` and `.dmg.sig` files.
+
+- `CaptureLab-0.8.0-macos-x86_64.dmg`
+- SHA-256: `e5356ffdf0b9e676ca13cba614b157b4ed04260cab2a4822474bcd3879e3841e`
+- Matching `.dmg.sha256` and `.dmg.sig` files.
+
+Compatibility and known validation limits:
+
+- Requires macOS 13 or later; choose arm64 for Apple Silicon or x86_64 for Intel.
+- Projects include original pixels underneath redactions. Share an exported PNG
+  when the recipient should not have access to the original image.
+- Uses the existing self-signed identity without notarization or hardened
+  runtime. Gatekeeper may require manual approval on first launch.
+- Physical Intel/macOS 13, mixed-display/Space interaction, Finder registration,
+  file-panel interaction, and long-running large-project editing remain unverified.
+
 ## 0.7.0 - 2026-10-02
 
 - Added precise region capture with the last successful region, fixed size and

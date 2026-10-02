@@ -68,6 +68,22 @@ cat >"$INFO_PLIST" <<PLIST
     <string>en</string>
     <string>zh-Hans</string>
   </array>
+  <key>CFBundleDocumentTypes</key>
+  <array><dict>
+    <key>CFBundleTypeName</key><string>CaptureLab Project</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Owner</string>
+    <key>LSItemContentTypes</key><array><string>com.crazyjal.CaptureLab.project</string></array>
+  </dict></array>
+  <key>UTExportedTypeDeclarations</key>
+  <array><dict>
+    <key>UTTypeIdentifier</key><string>com.crazyjal.CaptureLab.project</string>
+    <key>UTTypeDescription</key><string>CaptureLab Project</string>
+    <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    <key>UTTypeTagSpecification</key><dict>
+      <key>public.filename-extension</key><array><string>capturelab</string></array>
+    </dict>
+  </dict></array>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>

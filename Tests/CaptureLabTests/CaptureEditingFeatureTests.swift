@@ -160,7 +160,7 @@ final class CaptureEditingFeatureTests: XCTestCase {
         XCTAssertFalse(model.canRedoAnnotation)
     }
 
-    func testCropFlattensMosaicAndUndoRedoRestoreEditableDocumentAndCroppedPixels() throws {
+    func testCropPreservesEditableMosaicAndUndoRedoRestoreDocumentAndCroppedOutput() throws {
         let fixture = try EditingFeatureFixture()
         defer { fixture.remove() }
         let model = fixture.makeModel()
@@ -176,20 +176,22 @@ final class CaptureEditingFeatureTests: XCTestCase {
         XCTAssertTrue(model.applyCrop())
 
         let cropped = try XCTUnwrap(model.document)
-        let croppedPixels = try Self.pixelData(cropped.image)
+        let croppedOutput = try XCTUnwrap(model.renderedSnapshot()?.image)
+        let croppedPixels = try Self.pixelData(croppedOutput)
+        XCTAssertTrue(cropped.image === original.image)
         XCTAssertNotEqual(cropped.id, original.id)
         XCTAssertEqual(cropped.pixelSize, CGSize(width: 32, height: 24))
-        XCTAssertTrue(model.annotations.isEmpty)
+        XCTAssertEqual(model.annotations, [mosaic])
         XCTAssertNil(model.cropSelection)
         XCTAssertEqual(model.selectedTool, .select)
-        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(cropped.image.captureLabCGImage()))
+        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(croppedOutput.captureLabCGImage()))
         let sourceBitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(original.image.captureLabCGImage()))
         let sourceLeft = try XCTUnwrap(sourceBitmap.colorAt(x: 3, y: 3))
         let sourceRight = try XCTUnwrap(sourceBitmap.colorAt(x: 4, y: 3))
         let mosaicLeft = try XCTUnwrap(bitmap.colorAt(x: 3, y: 3))
         let mosaicRight = try XCTUnwrap(bitmap.colorAt(x: 4, y: 3))
         // The original two-pixel checker changes at this boundary. A mosaic
-        // block must remove that detail even after flattening and cropping.
+        // block must remove that detail in the ordinary cropped output.
         XCTAssertGreaterThan(abs(sourceLeft.redComponent - sourceRight.redComponent), 0.9)
         XCTAssertEqual(mosaicLeft.redComponent, mosaicRight.redComponent, accuracy: 0.001)
         XCTAssertEqual(mosaicLeft.greenComponent, mosaicRight.greenComponent, accuracy: 0.001)
@@ -203,8 +205,8 @@ final class CaptureEditingFeatureTests: XCTestCase {
         XCTAssertEqual(model.annotations, [mosaic])
         model.redoAnnotation()
         XCTAssertEqual(model.document?.id, cropped.id)
-        XCTAssertTrue(model.annotations.isEmpty)
-        XCTAssertEqual(try Self.pixelData(XCTUnwrap(model.document?.image)), croppedPixels)
+        XCTAssertEqual(model.annotations, [mosaic])
+        XCTAssertEqual(try Self.pixelData(XCTUnwrap(model.renderedSnapshot()?.image)), croppedPixels)
     }
 
     func testCropCommitsPendingTextBeforeRenderingAndUndoRestoresThatText() throws {

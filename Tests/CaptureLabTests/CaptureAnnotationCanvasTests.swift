@@ -23,6 +23,59 @@ final class CaptureAnnotationCanvasTests: XCTestCase {
         XCTAssertTrue(didCancel)
     }
 
+    func testRotatedCanvasHitAndMoveUseVisibleCoordinates() throws {
+        let harness = CanvasHarness(tool: .select)
+        defer { harness.close() }
+        let original = try XCTUnwrap(harness.view.document)
+        harness.view.setDocument(original.adjusting(.rotateClockwise))
+        let annotation = CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0.2, y: 0.25, width: 0.2, height: 0.3))
+        harness.view.annotations = [annotation]
+        let rect = harness.view.outputDisplayRect
+        let center = CGPoint(x: rect.minX + rect.width * 0.6, y: rect.minY + rect.height * 0.3)
+        harness.drag(from: center, to: CGPoint(x: center.x + rect.width * 0.1, y: center.y))
+        let moved = try XCTUnwrap(harness.view.annotations.first)
+        XCTAssertEqual(moved.id, annotation.id)
+        XCTAssertEqual(moved.normalizedRect.minX, 0.2, accuracy: 0.001)
+        XCTAssertEqual(moved.normalizedRect.minY, 0.15, accuracy: 0.001)
+    }
+
+    func testCroppedFlippedCanvasCreatesArrowAtVisibleLocation() throws {
+        let harness = CanvasHarness(tool: .arrow)
+        defer { harness.close() }
+        let original = try XCTUnwrap(harness.view.document)
+        let cropped = try XCTUnwrap(original.cropping(to: CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)))
+        harness.view.setDocument(cropped.adjusting(.flipHorizontal))
+        let rect = harness.view.outputDisplayRect
+        harness.drag(from: CGPoint(x: rect.minX + rect.width * 0.2, y: rect.minY + rect.height * 0.2),
+                     to: CGPoint(x: rect.minX + rect.width * 0.8, y: rect.minY + rect.height * 0.8))
+        let arrow = try XCTUnwrap(harness.view.annotations.first)
+        XCTAssertEqual(arrow.normalizedPoints[0].x, 0.65, accuracy: 0.001)
+        XCTAssertEqual(arrow.normalizedPoints[0].y, 0.35, accuracy: 0.001)
+        XCTAssertEqual(arrow.normalizedPoints[1].x, 0.35, accuracy: 0.001)
+        XCTAssertEqual(arrow.normalizedPoints[1].y, 0.65, accuracy: 0.001)
+    }
+
+    func testCropSelectionMovesSnapsAndResizesWithPresetAfterRotation() throws {
+        let harness = CanvasHarness(tool: .crop)
+        defer { harness.close() }
+        let original = try XCTUnwrap(harness.view.document)
+        harness.view.setDocument(original.adjusting(.rotateClockwise))
+        harness.view.cropSelection = CGRect(x: 0.2, y: 0.2, width: 0.4, height: 0.4)
+        let rect = harness.view.outputDisplayRect
+        harness.drag(from: CGPoint(x: rect.minX + rect.width * 0.4, y: rect.minY + rect.height * 0.4),
+                     to: CGPoint(x: rect.minX + rect.width * 0.205, y: rect.minY + rect.height * 0.4))
+        let moved = try XCTUnwrap(harness.view.cropSelection)
+        XCTAssertEqual(moved.minX, 0, accuracy: 0.001)
+        XCTAssertEqual(moved.width, 0.4, accuracy: 0.001)
+        harness.view.cropPreset = .square
+        harness.drag(from: CGPoint(x: rect.minX + rect.width * moved.maxX, y: rect.minY + rect.height * moved.maxY),
+                     to: CGPoint(x: rect.minX + rect.width * 0.65, y: rect.minY + rect.height * 0.8))
+        let resized = try XCTUnwrap(harness.view.cropSelection)
+        let size = try XCTUnwrap(harness.view.document?.canvasSize)
+        XCTAssertEqual(resized.width * size.width, resized.height * size.height, accuracy: 0.01)
+        XCTAssertTrue(harness.view.annotations.isEmpty)
+    }
+
     func testNewStyledAnnotationKeepsAppearanceAfterMoving() throws {
         let harness = CanvasHarness(tool: .rectangle)
         defer { harness.close() }

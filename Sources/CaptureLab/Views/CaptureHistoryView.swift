@@ -86,9 +86,15 @@ struct CaptureHistoryView: View {
             .help(L10n.openRecentCapture)
             .disabled(model.isCapturing)
 
-            Text(item.displayTitle)
-                .font(.callout.weight(.medium))
-                .lineLimit(1)
+            HStack {
+                Text(item.displayTitle).font(.callout.weight(.medium)).lineLimit(1)
+                if item.projectFileName != nil {
+                    Image(systemName: "square.and.pencil")
+                        .foregroundStyle(.secondary)
+                        .help(L10n.text(en: "Reopen to continue editing", zh: "重新打开可继续编辑"))
+                        .accessibilityLabel(L10n.text(en: "Editable project", zh: "可编辑项目"))
+                }
+            }
             HStack {
                 Text("\(item.pixelWidth) × \(item.pixelHeight)")
                     .font(.caption)

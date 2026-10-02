@@ -1,6 +1,6 @@
 import AppKit
 
-struct CaptureAnnotationColor: Hashable {
+struct CaptureAnnotationColor: Hashable, Codable {
     var red: CGFloat
     var green: CGFloat
     var blue: CGFloat
@@ -17,7 +17,7 @@ struct CaptureAnnotationColor: Hashable {
     }
 }
 
-struct CaptureAnnotationAppearance: Hashable {
+struct CaptureAnnotationAppearance: Hashable, Codable {
     // Nil retains the original automatic sizing and tool-specific color.
     var color: CaptureAnnotationColor?
     var lineWidth: CGFloat?

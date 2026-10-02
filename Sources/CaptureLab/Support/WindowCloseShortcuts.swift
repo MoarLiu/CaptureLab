@@ -82,7 +82,7 @@ private struct WindowCloseShortcutInstaller: NSViewRepresentable {
                     if isEscape, let onEscape = self.onEscape {
                         onEscape()
                     } else {
-                        window.close()
+                        window.performClose(nil)
                     }
                     return true
                 }

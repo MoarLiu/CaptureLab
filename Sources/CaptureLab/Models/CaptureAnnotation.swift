@@ -89,7 +89,7 @@ enum CaptureTool: String, CaseIterable, Identifiable {
     }
 }
 
-struct CaptureAnnotationPoint: Hashable {
+struct CaptureAnnotationPoint: Hashable, Codable {
     var x: CGFloat
     var y: CGFloat
 
@@ -103,8 +103,8 @@ struct CaptureAnnotationPoint: Hashable {
     }
 }
 
-struct CaptureAnnotation: Identifiable, Hashable {
-    enum Kind: String, Hashable {
+struct CaptureAnnotation: Identifiable, Hashable, Codable {
+    enum Kind: String, Hashable, Codable {
         case arrow
         case line
         case rectangle

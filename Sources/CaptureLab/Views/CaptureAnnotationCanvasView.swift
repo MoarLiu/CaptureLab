@@ -11,6 +11,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
     var selectedAnnotationID: UUID?
     var cropSelection: Binding<CGRect?> = .constant(nil)
     var onSelectionChanged: (UUID?) -> Void = { _ in }
+    var cropPreset: CaptureCropPreset = .free
     var applyCrop: () -> Void = {}
     var cancelCrop: () -> Void = {}
 
@@ -67,6 +68,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         view.annotationAppearance = annotationAppearance
         view.synchronizeSelection(selectedAnnotationID)
         view.cropSelection = cropSelection.wrappedValue
+        view.cropPreset = cropPreset
         view.onSelectionChanged = onSelectionChanged
         view.onCropSelectionChanged = { selection in cropSelection.wrappedValue = selection }
         view.onApplyCrop = applyCrop
@@ -130,6 +132,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
     var onAnnotationsChanged: (([CaptureAnnotation]) -> Void)?
 
+    private var transformedPreview: (id: UUID, annotations: [CaptureAnnotation], image: NSImage?)?
     private var documentSignature: String?
     private var selectedAnnotationID: UUID? {
         didSet {
@@ -138,6 +141,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
     var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
     var cropSelection: CGRect? { didSet { needsDisplay = true } }
+    var cropPreset: CaptureCropPreset = .free
     var onSelectionChanged: ((UUID?) -> Void)?
     var onCropSelectionChanged: ((CGRect?) -> Void)?
     var onApplyCrop: (() -> Void)?
@@ -211,6 +215,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             selectedAnnotationID = nil
             interaction = nil
             clearMosaicCache()
+            transformedPreview = nil
             documentSignature = signature
         }
         self.document = document
@@ -231,38 +236,43 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
 
         let imageRect = imageDisplayRect(for: document.image.size)
-        document.image.draw(
-            in: imageRect,
-            from: NSRect(origin: .zero, size: document.image.size),
-            operation: .sourceOver,
-            fraction: 1,
-            respectFlipped: true,
-            hints: nil
-        )
-
-        NSColor.separatorColor.withAlphaComponent(0.3).setStroke()
-        NSBezierPath(rect: imageRect).stroke()
-
-        for annotation in annotations where annotation.id != editingTextAnnotationID {
-            draw(annotation, imageRect: imageRect, document: document)
+        let usesGeometry = document.geometry != CaptureDocumentGeometry()
+        let visibleAnnotations = annotations.filter { $0.id != editingTextAnnotationID }
+        if usesGeometry {
+            if transformedPreview?.id != document.id || transformedPreview?.annotations != visibleAnnotations {
+                let composed = document.image.renderedWithCaptureLabAnnotations(visibleAnnotations)
+                transformedPreview = (document.id, visibleAnnotations, composed.flatMap { document.applyingGeometry(to: $0) })
+            }
+            // An unsuccessful composition leaves an empty canvas, never a source fallback.
+            transformedPreview?.image?.draw(in: outputDisplayRect, from: .zero,
+                operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: outputDisplayRect).addClip()
+        NSGraphicsContext.current?.cgContext.concatenate(sourceViewTransform)
+        if !usesGeometry {
+            document.image.draw(in: imageRect, from: NSRect(origin: .zero, size: document.image.size),
+                operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            NSColor.separatorColor.withAlphaComponent(0.3).setStroke()
+            NSBezierPath(rect: imageRect).stroke()
+            for annotation in visibleAnnotations { draw(annotation, imageRect: imageRect, document: document) }
         }
 
         if let draft = draftAnnotation(in: imageRect) {
             var styledDraft = draft
             styledDraft.appearance = annotationAppearance
-            styledDraft = styledDraft.fittingFontBounds(in: document.pixelSize)
+            styledDraft = styledDraft.fittingFontBounds(in: document.sourcePixelSize)
             draw(styledDraft, imageRect: imageRect, document: document, isDraft: true)
         }
 
-        if selectedTool == .crop {
-            drawCropSelection(in: imageRect)
-        }
 
         if let selected = selectedAnnotation,
            selected.id != editingTextAnnotationID,
            canEdit(selected) {
             drawSelection(for: selected, imageRect: imageRect)
         }
+        NSGraphicsContext.restoreGraphicsState()
+        if selectedTool == .crop { drawCropSelection(in: outputDisplayRect) }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -272,14 +282,14 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
         let point = canvasPoint(for: event)
         if let activeTextField,
-           !activeTextField.frame.insetBy(dx: -4, dy: -4).contains(point) {
+           !activeTextField.frame.insetBy(dx: -4, dy: -4).contains(rawCanvasPoint(for: event)) {
             commitActiveTextEdit()
         }
 
         window?.makeFirstResponder(self)
 
-        let imageRect = imageDisplayRect(for: document.image.size)
-        guard imageRect.contains(point) else {
+        let imageRect = selectedTool == .crop ? outputDisplayRect : imageDisplayRect(for: document.image.size)
+        guard outputDisplayRect.contains(rawCanvasPoint(for: event)), imageRect.contains(point) else {
             selectedAnnotationID = nil
             interaction = nil
             needsDisplay = true
@@ -288,9 +298,18 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
         if selectedTool == .crop {
             selectedAnnotationID = nil
-            cropSelection = nil
-            onCropSelectionChanged?(nil)
-            interaction = .cropping(start: point, current: point)
+            if let cropSelection {
+                let rect = cropRectInView(cropSelection)
+                if let corner = [ResizeHandle.topLeft, .topRight, .bottomLeft, .bottomRight].first(where: {
+                    handleRect(center: $0.position(in: rect), size: 16).contains(point)
+                }) {
+                    interaction = .adjustingCrop(original: cropSelection, handle: corner, start: point)
+                } else if rect.contains(point) {
+                    interaction = .adjustingCrop(original: cropSelection, handle: nil, start: point)
+                } else {
+                    interaction = .cropping(start: point, current: point)
+                }
+            } else { interaction = .cropping(start: point, current: point) }
             needsDisplay = true
             return
         }
@@ -336,13 +355,25 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             return
         }
 
-        let imageRect = imageDisplayRect(for: document.image.size)
+        let imageRect = selectedTool == .crop ? outputDisplayRect : imageDisplayRect(for: document.image.size)
         let point = CaptureGeometry.clamped(canvasPoint(for: event), to: imageRect)
 
         switch interaction {
         case .cropping(let start, _):
             self.interaction = .cropping(start: start, current: point)
             updateCropSelection(start: start, current: point, imageRect: imageRect)
+        case .adjustingCrop(let original, let handle, let start):
+            if let handle {
+                let rect = cropRectInView(original)
+                let opposite = CGPoint(x: handle.horizontal == .west ? rect.maxX : rect.minX,
+                                       y: handle.vertical == .north ? rect.maxY : rect.minY)
+                updateCropSelection(start: opposite, current: point, imageRect: imageRect)
+            } else {
+                cropSelection = CaptureCropGeometry.moving(original,
+                    dx: (point.x - start.x) / imageRect.width, dy: (point.y - start.y) / imageRect.height,
+                    snap: CGSize(width: 8 / imageRect.width, height: 8 / imageRect.height), pixelSize: document.canvasSize)
+                onCropSelectionChanged?(cropSelection)
+            }
         case .creating(let kind, let start, _):
             self.interaction = .creating(kind: kind, start: start, current: point)
         case .brushing(var points):
@@ -382,11 +413,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             return
         }
 
-        let imageRect = imageDisplayRect(for: document.image.size)
+        let imageRect = selectedTool == .crop ? outputDisplayRect : imageDisplayRect(for: document.image.size)
 
         switch interaction {
         case .cropping(let start, let current):
             updateCropSelection(start: start, current: current, imageRect: imageRect)
+        case .adjustingCrop: break
         case .creating(let kind, let start, let current):
             commitCreatedAnnotation(kind: kind, start: start, current: current, imageRect: imageRect)
         case .brushing(let points):
@@ -435,7 +467,31 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         return annotations.first { $0.id == selectedAnnotationID }
     }
 
+    var outputDisplayRect: CGRect {
+        layoutImageRect(for: document?.displaySize ?? .zero)
+    }
+
     private func imageDisplayRect(for imageSize: CGSize) -> CGRect {
+        guard let document else { return layoutImageRect(for: imageSize) }
+        let output = outputDisplayRect
+        return CGRect(origin: output.origin,
+                      size: CGSize(width: document.sourcePixelSize.width * output.width / document.canvasSize.width,
+                                   height: document.sourcePixelSize.height * output.height / document.canvasSize.height))
+    }
+
+    var sourceViewTransform: CGAffineTransform {
+        guard let document else { return .identity }
+        let output = outputDisplayRect
+        let sx = output.width / document.canvasSize.width
+        let sy = output.height / document.canvasSize.height
+        return CGAffineTransform(translationX: -output.minX, y: -output.minY)
+            .concatenating(CGAffineTransform(scaleX: 1 / sx, y: 1 / sy))
+            .concatenating(document.geometry.transform)
+            .concatenating(CGAffineTransform(scaleX: sx, y: sy))
+            .concatenating(CGAffineTransform(translationX: output.minX, y: output.minY))
+    }
+
+    private func layoutImageRect(for imageSize: CGSize) -> CGRect {
         let contentOrigin = CGPoint(x: 80, y: 60)
         let contentSize = CGSize(width: max(bounds.width - 160, 1), height: max(bounds.height - 120, 1))
 
@@ -518,7 +574,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
         var styled = annotation
         styled.appearance = annotationAppearance
-        if let document { styled = styled.fittingFontBounds(in: document.pixelSize) }
+        if let document { styled = styled.fittingFontBounds(in: document.sourcePixelSize) }
         annotations.append(styled)
         onAnnotationsChanged?(annotations)
         selectedAnnotationID = annotation.id
@@ -590,18 +646,30 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         case .brushing(let points):
             let normalized = points.map { CaptureGeometry.normalizedPoint(from: $0, in: imageRect) }
             return .brush(points: normalized)
-        case .cropping, .moving, .resizingRect, .movingArrowPoint:
+        case .cropping, .adjustingCrop, .moving, .resizingRect, .movingArrowPoint:
             return nil
         }
     }
 
     private func updateCropSelection(start: CGPoint, current: CGPoint, imageRect: CGRect) {
-        let rect = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
-                          width: abs(current.x - start.x), height: abs(current.y - start.y))
-        let selection = rect.width >= 4 && rect.height >= 4
-            ? CaptureGeometry.normalizedRect(from: rect, in: imageRect) : nil
+        guard let document else { return }
+        func snapped(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: abs(point.x - imageRect.minX) < 8 ? imageRect.minX : (abs(point.x - imageRect.maxX) < 8 ? imageRect.maxX : point.x),
+                    y: abs(point.y - imageRect.minY) < 8 ? imageRect.minY : (abs(point.y - imageRect.maxY) < 8 ? imageRect.maxY : point.y))
+        }
+        let rect = CaptureCropGeometry.selection(
+            anchor: CaptureGeometry.normalizedPoint(from: snapped(start), in: imageRect),
+            current: CaptureGeometry.normalizedPoint(from: snapped(current), in: imageRect),
+            size: document.canvasSize, ratio: cropPreset.ratio(in: document.canvasSize))
+        let selection: CGRect? = rect.width * imageRect.width >= 1 && rect.height * imageRect.height >= 1 ? rect : nil
         cropSelection = selection
         onCropSelectionChanged?(selection)
+    }
+
+    private func cropRectInView(_ selection: CGRect) -> CGRect {
+        let rect = outputDisplayRect
+        return CGRect(x: rect.minX + selection.minX * rect.width, y: rect.minY + selection.minY * rect.height,
+                      width: selection.width * rect.width, height: selection.height * rect.height)
     }
 
     private func drawCropSelection(in imageRect: CGRect) {
@@ -619,6 +687,10 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let outline = NSBezierPath(rect: rect)
         outline.lineWidth = 2
         outline.stroke()
+        for corner in [ResizeHandle.topLeft, .topRight, .bottomLeft, .bottomRight] {
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: handleRect(center: corner.position(in: rect), size: 8)).fill()
+        }
         for fraction: CGFloat in [1 / 3, 2 / 3] {
             let grid = NSBezierPath()
             grid.move(to: CGPoint(x: rect.minX + rect.width * fraction, y: rect.minY))
@@ -817,7 +889,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let imageRect = imageDisplayRect(for: document.image.size)
         let style = annotationStyle(for: document, imageRect: imageRect, appearance: annotation.appearance)
         let annotationRect = annotation.rect(in: imageRect)
-        let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 120, height: 34)
+        let rect = annotation.rect(in: imageRect).applying(sourceViewTransform).expandedToMinimumSize(width: 120, height: 34)
         let field = NSTextField(frame: rect)
         field.stringValue = annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text
         field.font = NSFont.systemFont(
@@ -870,7 +942,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             selectedAnnotationID = nil
         } else if let index = annotations.firstIndex(where: { $0.id == id }) {
             annotations[index].text = text
-            if let document { annotations[index] = annotations[index].fittingFontBounds(in: document.pixelSize) }
+            if let document { annotations[index] = annotations[index].fittingFontBounds(in: document.sourcePixelSize) }
             selectedAnnotationID = id
         }
 
@@ -1137,7 +1209,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         for annotation: CaptureAnnotation,
         document: CaptureDocument
     ) -> CGSize {
-        let sourcePixelSize = document.pixelSize
+        let sourcePixelSize = document.sourcePixelSize
         let sourceCrop = CapturePixelation.cropRect(
             for: annotation.normalizedRect,
             pixelSize: sourcePixelSize
@@ -1179,7 +1251,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         appearance: CaptureAnnotationAppearance = .init()
     ) -> CaptureAnnotationStyle {
         CaptureAnnotationStyle(
-            sourcePixelSize: document.pixelSize,
+            sourcePixelSize: document.sourcePixelSize,
             renderedImageSize: imageRect.size,
             appearance: appearance
         )
@@ -1302,6 +1374,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
 
     private func canvasPoint(for event: NSEvent) -> CGPoint {
+        let raw = rawCanvasPoint(for: event)
+        if selectedTool == .crop { return raw }
+        return CaptureGeometry.clamped(raw, to: outputDisplayRect).applying(sourceViewTransform.inverted())
+    }
+
+    private func rawCanvasPoint(for event: NSEvent) -> CGPoint {
         guard window != nil else {
             return event.locationInWindow
         }
@@ -1309,7 +1387,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
 
     private static func signature(for document: CaptureDocument) -> String {
-        let pixelSize = document.pixelSize
+        let pixelSize = document.sourcePixelSize
         return [
             document.id.uuidString,
             document.sourceURL?.path ?? "capture",
@@ -1333,6 +1411,7 @@ private struct MosaicCacheEntry {
 }
 
 private enum Interaction {
+    case adjustingCrop(original: CGRect, handle: ResizeHandle?, start: CGPoint)
     case cropping(start: CGPoint, current: CGPoint)
     case creating(kind: CaptureAnnotation.Kind, start: CGPoint, current: CGPoint)
     case brushing(points: [CGPoint])

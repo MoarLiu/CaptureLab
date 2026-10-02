@@ -71,6 +71,6 @@ struct CaptureHistoryRetention: Codable, Equatable {
     func retaining(_ items: [CaptureHistoryItem], now: Date) -> [CaptureHistoryItem] {
         let policy = validated
         let cutoff = policy.maximumAgeDays.map { now.addingTimeInterval(-Double($0) * 86_400) }
-        return Array(items.filter { cutoff == nil || $0.createdAt >= cutoff! }.prefix(policy.maximumCount))
+        return Array(items.filter { cutoff == nil || ($0.modifiedAt ?? $0.createdAt) >= cutoff! }.prefix(policy.maximumCount))
     }
 }

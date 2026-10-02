@@ -6,9 +6,17 @@ struct CaptureDocument {
     var image: NSImage
     var sourceURL: URL?
     var createdAt: Date
+    var geometry = CaptureDocumentGeometry()
 
     var pixelSize: CGSize {
-        image.captureLabPixelSize
+        geometry.outputSize ?? canvasSize
+    }
+
+    var sourcePixelSize: CGSize { image.captureLabPixelSize }
+    var canvasSize: CGSize { geometry.canvasSize ?? sourcePixelSize }
+    var displaySize: CGSize {
+        let scale = image.size.width / max(sourcePixelSize.width, 1)
+        return CGSize(width: pixelSize.width * scale, height: pixelSize.height * scale)
     }
 
     var displayTitle: String {

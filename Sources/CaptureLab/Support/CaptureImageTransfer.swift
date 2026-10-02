@@ -32,9 +32,9 @@ enum CaptureImageImport {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0, width <= maximumPixels / height,
+              CaptureDocumentGeometry.validSize(CGSize(width: width, height: height)),
               let image = NSImage(data: data), image.isValid,
-              let png = image.captureLabPNGData() else {
+              let png = image.captureLabPNGData(), png.count <= maximumBytes else {
             throw CaptureLabError.imageLoadFailed
         }
         return png

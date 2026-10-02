@@ -83,7 +83,7 @@ final class CaptureHistoryStore: ObservableObject {
                     // Only reclaim files after recovery metadata is durable.
                     do {
                         try persist(items)
-                        Self.removeUnreferencedPNGFiles(retaining: items, historyDirectory: historyDirectory, fileManager: fileManager)
+                        Self.removeUnreferencedResources(retaining: items, historyDirectory: historyDirectory, fileManager: fileManager)
                     } catch { /* Keep all recoverable images for the next retry. */ }
                     return
                 }
@@ -97,7 +97,7 @@ final class CaptureHistoryStore: ObservableObject {
                     }
                 }
                 items = retained
-                Self.removeUnreferencedPNGFiles(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
+                Self.removeUnreferencedResources(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
             }
         } catch {
             if items.isEmpty {
@@ -161,12 +161,78 @@ final class CaptureHistoryStore: ObservableObject {
             }
 
             items = retainedItems
-            Self.removeUnreferencedPNGFiles(
+            Self.removeUnreferencedResources(
                 retaining: retainedItems,
                 historyDirectory: historyDirectory,
                 fileManager: fileManager
             )
             return item
+        }
+    }
+
+    /// Both resources are immutable revisions; one metadata replacement commits
+    /// them together. A stale editor creates a separate entry instead of replacing
+    /// a concurrent edit. All reads and retention share the cross-process lock.
+    func saveEditable(preview: Data, project: Data, for previous: CaptureHistoryItem?,
+                      pixelSize: CGSize, createdAt: Date) throws -> CaptureHistoryItem {
+        guard !preview.isEmpty, !project.isEmpty, CaptureDocumentGeometry.validSize(pixelSize) else {
+            throw CaptureHistoryError.imageDataUnavailable
+        }
+        return try withExclusiveHistoryLock {
+            let current = try readableItems()
+            retention = try readRetention()
+            let existing = previous.flatMap { old in current.first { $0.id == old.id && $0.fileName == old.fileName } }
+            let id = existing?.id ?? UUID()
+            let stamp = existing?.createdAt ?? createdAt
+            let stem = "capture-\(Self.fileTimestampFormatter.string(from: stamp))-\(UUID().uuidString)-\(id.uuidString)"
+            let imageURL = historyDirectory.appendingPathComponent(stem + ".png")
+            let projectURL = historyDirectory.appendingPathComponent(stem + ".capturelab")
+            do {
+                try imageWriter(preview, imageURL)
+                try CaptureProjectStore.write(project, to: projectURL)
+            } catch {
+                try? fileManager.removeItem(at: imageURL)
+                try? fileManager.removeItem(at: projectURL)
+                throw error
+            }
+            let item = CaptureHistoryItem(id: id, createdAt: stamp, fileName: imageURL.lastPathComponent,
+                                          pixelWidth: Int(pixelSize.width), pixelHeight: Int(pixelSize.height),
+                                          projectFileName: projectURL.lastPathComponent, modifiedAt: now())
+            let updated = retention.retaining([item] + current.filter { $0.id != id }, now: now())
+            do { try persist(updated) }
+            catch {
+                synchronizeAfterMetadataFailure(fallback: current)
+                throw error
+            }
+            items = updated
+            loadError = nil
+            Self.removeUnreferencedResources(retaining: updated, historyDirectory: historyDirectory, fileManager: fileManager)
+            return item
+        }
+    }
+
+    struct EditableSnapshot {
+        var item: CaptureHistoryItem
+        var preview: Data
+        var project: Data?
+    }
+
+    func editableSnapshot(for item: CaptureHistoryItem) throws -> EditableSnapshot {
+        try withExclusiveHistoryLock(reclaimsAbandonedUpdates: false) {
+            let current = try readableItems()
+            items = current
+            guard let entry = current.first(where: { $0.id == item.id }),
+                  let imageURL = Self.historyFileURL(fileName: entry.fileName, historyDirectory: historyDirectory),
+                  Self.isRegularFile(imageURL) else { throw CaptureHistoryError.imageNotFound }
+            var project: Data?
+            if let name = entry.projectFileName {
+                guard let url = Self.projectFileURL(fileName: name, historyDirectory: historyDirectory),
+                      Self.isRegularFile(url),
+                      let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                      size <= CaptureProjectStore.maximumBytes else { throw CaptureProjectError.invalid }
+                project = try Data(contentsOf: url)
+            }
+            return EditableSnapshot(item: entry, preview: try Data(contentsOf: imageURL), project: project)
         }
     }
 
@@ -205,7 +271,7 @@ final class CaptureHistoryStore: ObservableObject {
                 }
                 items = retained
                 loadError = nil
-                Self.removeUnreferencedPNGFiles(
+                Self.removeUnreferencedResources(
                     retaining: retained,
                     historyDirectory: historyDirectory,
                     fileManager: fileManager
@@ -247,6 +313,11 @@ final class CaptureHistoryStore: ObservableObject {
                         historyDirectory: historyDirectory
                       ), Self.isRegularFile(fileURL) else { continue }
                 try fileManager.removeItem(at: fileURL)
+                if let name = removedItem.projectFileName,
+                   let projectURL = Self.projectFileURL(fileName: name, historyDirectory: historyDirectory),
+                   Self.isRegularFile(projectURL), !retainedItems.contains(where: { $0.projectFileName == name }) {
+                    try fileManager.removeItem(at: projectURL)
+                }
             }
         }
     }
@@ -281,7 +352,7 @@ final class CaptureHistoryStore: ObservableObject {
 
             let width = pixelSize.map { Int($0.width) } ?? currentItem.pixelWidth
             let height = pixelSize.map { Int($0.height) } ?? currentItem.pixelHeight
-            if width == currentItem.pixelWidth, height == currentItem.pixelHeight {
+            if width == currentItem.pixelWidth, height == currentItem.pixelHeight, currentItem.projectFileName == nil {
                 let temporaryURL = historyDirectory.appendingPathComponent(".image-update-\(UUID().uuidString).pending")
                 defer { try? fileManager.removeItem(at: temporaryURL) }
                 try imageWriter(data, temporaryURL)
@@ -300,6 +371,7 @@ final class CaptureHistoryStore: ObservableObject {
             }
 
             var updatedItem = currentItem
+            updatedItem.projectFileName = nil
             updatedItem.fileName = "capture-\(Self.fileTimestampFormatter.string(from: currentItem.createdAt))-\(UUID().uuidString)-\(currentItem.id.uuidString).png"
             updatedItem.pixelWidth = width
             updatedItem.pixelHeight = height
@@ -320,7 +392,7 @@ final class CaptureHistoryStore: ObservableObject {
             }
 
             items = updatedItems
-            Self.removeUnreferencedPNGFiles(
+            Self.removeUnreferencedResources(
                 retaining: updatedItems,
                 historyDirectory: historyDirectory,
                 fileManager: fileManager
@@ -371,7 +443,7 @@ final class CaptureHistoryStore: ObservableObject {
     private func persist(_ items: [CaptureHistoryItem], policy: CaptureHistoryRetention? = nil) throws {
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
         let effective = policy ?? ((try? readRetention()) ?? retention)
-        let document = MetadataDocument(schemaVersion: 2, items: items, retention: effective)
+        let document = MetadataDocument(schemaVersion: 3, items: items, retention: effective)
         try metadataWriter(encoder.encode(document), metadataURL)
         retention = effective
     }
@@ -406,7 +478,7 @@ final class CaptureHistoryStore: ObservableObject {
             }
             items = retained
             loadError = nil
-            Self.removeUnreferencedPNGFiles(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
+            Self.removeUnreferencedResources(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
             return nil
         }
     }
@@ -432,7 +504,7 @@ final class CaptureHistoryStore: ObservableObject {
         }
         items = committedItems
         retention = (document.retention ?? .default).validated
-        Self.removeUnreferencedPNGFiles(
+        Self.removeUnreferencedResources(
             // Keep every raw metadata reference during error recovery, even
             // when loadItems filtered a missing file, duplicate, or overflow.
             // Filtering must not be mistaken for a successfully committed
@@ -539,6 +611,7 @@ final class CaptureHistoryStore: ObservableObject {
                       fileName: item.fileName,
                       historyDirectory: historyDirectory
                   ), isRegularFile(fileURL),
+                  item.projectFileName.map({ projectFileURL(fileName: $0, historyDirectory: historyDirectory) != nil }) ?? true,
                   seenIDs.insert(item.id).inserted,
                   seenFileNames.insert(item.fileName).inserted else {
                 return nil
@@ -577,7 +650,9 @@ final class CaptureHistoryStore: ObservableObject {
                         createdAt: createdAt,
                         fileName: url.lastPathComponent,
                         pixelWidth: Int(pixelSize.width),
-                        pixelHeight: Int(pixelSize.height)
+                        pixelHeight: Int(pixelSize.height),
+                        projectFileName: Self.isRegularFile(url.deletingPathExtension().appendingPathExtension("capturelab"))
+                            ? url.deletingPathExtension().lastPathComponent + ".capturelab" : nil
                     ),
                     modifiedAt: values?.contentModificationDate ?? createdAt
                 )
@@ -597,12 +672,12 @@ final class CaptureHistoryStore: ObservableObject {
             .map { $0 }
     }
 
-    private static func removeUnreferencedPNGFiles(
+    private static func removeUnreferencedResources(
         retaining items: [CaptureHistoryItem],
         historyDirectory: URL,
         fileManager: FileManager
     ) {
-        let retainedFileNames = Set(items.map(\.fileName))
+        let retainedFileNames = Set(items.map(\.fileName) + items.compactMap(\.projectFileName))
         guard let urls = try? fileManager.contentsOfDirectory(
             at: historyDirectory,
             includingPropertiesForKeys: nil
@@ -610,7 +685,7 @@ final class CaptureHistoryStore: ObservableObject {
             return
         }
 
-        for url in urls where url.pathExtension.lowercased() == "png" {
+        for url in urls where ["png", "capturelab"].contains(url.pathExtension.lowercased()) {
             guard !retainedFileNames.contains(url.lastPathComponent),
                   isRegularFile(url) else {
                 continue
@@ -629,7 +704,7 @@ final class CaptureHistoryStore: ObservableObject {
         )
         for url in urls {
             let fileName = url.lastPathComponent
-            let prefix = ".image-update-"
+            let prefix = fileName.hasPrefix(".capturelab-") ? ".capturelab-" : ".image-update-"
             let suffix = ".pending"
             guard fileName.hasPrefix(prefix), fileName.hasSuffix(suffix) else { continue }
             let uuidText = String(fileName.dropFirst(prefix.count).dropLast(suffix.count))
@@ -659,6 +734,12 @@ final class CaptureHistoryStore: ObservableObject {
             return nil
         }
         return candidate
+    }
+
+    private static func projectFileURL(fileName: String, historyDirectory: URL) -> URL? {
+        guard !fileName.isEmpty, !fileName.contains("/"), !fileName.contains("\0"),
+              URL(fileURLWithPath: fileName).pathExtension == "capturelab" else { return nil }
+        return historyDirectory.appendingPathComponent(fileName)
     }
 
     private static func isRegularFile(_ url: URL) -> Bool {

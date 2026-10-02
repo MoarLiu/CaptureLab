@@ -229,9 +229,10 @@ final class CaptureWorkflowTests: XCTestCase {
         model.openHistoryItem(item)
         model.annotations = [CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5))]
         let edited = try XCTUnwrap(model.renderedSnapshot())
+        let annotations = model.annotations
         model.openHistoryItem(item)
-        XCTAssertTrue(model.annotations.isEmpty)
-        XCTAssertEqual(model.document?.image.captureLabPNGData(), NSImage(data: edited.data)?.captureLabPNGData())
+        XCTAssertEqual(model.annotations, annotations)
+        XCTAssertEqual(model.renderedSnapshot()?.image?.captureLabPNGData(), NSImage(data: edited.data)?.captureLabPNGData())
         XCTAssertEqual(try model.historyStore.data(for: item), edited.data)
     }
 

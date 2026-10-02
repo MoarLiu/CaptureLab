@@ -9,10 +9,10 @@ enum CaptureImageCrop {
               pixelSize.width > 0, pixelSize.height > 0 else { return nil }
         let rect = selection.standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
         guard !rect.isNull, rect.width > 0, rect.height > 0 else { return nil }
-        let left = floor(rect.minX * pixelSize.width)
-        let top = floor(rect.minY * pixelSize.height)
-        let right = min(pixelSize.width, ceil(rect.maxX * pixelSize.width))
-        let bottom = min(pixelSize.height, ceil(rect.maxY * pixelSize.height))
+        let left = floor(rect.minX * pixelSize.width + 0.0000001)
+        let top = floor(rect.minY * pixelSize.height + 0.0000001)
+        let right = min(pixelSize.width, ceil(rect.maxX * pixelSize.width - 0.0000001))
+        let bottom = min(pixelSize.height, ceil(rect.maxY * pixelSize.height - 0.0000001))
         return CGRect(x: left, y: top, width: right - left, height: bottom - top)
     }
 

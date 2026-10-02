@@ -28,6 +28,11 @@ struct CaptureLabCommands: Commands {
         }
 
         CommandGroup(replacing: .newItem) {
+            Button(L10n.text(en: "Open Project…", zh: "打开项目…")) {
+                model.openProject()
+                if model.hasImage { showMainWindow() }
+            }.keyboardShortcut("o", modifiers: [.command, .shift]).disabled(model.isCapturing)
+
             Button(L10n.captureRegion) {
                 model.capture(.region, onSuccess: showMainWindow)
             }
@@ -80,6 +85,9 @@ struct CaptureLabCommands: Commands {
         }
 
         CommandGroup(replacing: .saveItem) {
+            Button(L10n.text(en: "Save Editable Project…", zh: "保存可编辑项目…"), action: model.saveProject)
+                .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.hasImage)
+
             Button(L10n.saveEditedImage) {
                 model.saveRenderedImage()
             }

@@ -378,7 +378,7 @@ final class CaptureLabViewModelTests: XCTestCase {
         XCTAssertTrue(model.annotations.isEmpty)
         XCTAssertFalse(model.canUndoAnnotation)
         XCTAssertTrue(model.ocrText.isEmpty)
-        XCTAssertEqual(model.historyItems, [item])
+        XCTAssertEqual(model.historyItems.map(\.id), [item.id])
         XCTAssertNotEqual(editedData, imageData)
         XCTAssertEqual(try historyStore.data(for: item), editedData)
     }
@@ -413,13 +413,14 @@ final class CaptureLabViewModelTests: XCTestCase {
         await fulfillment(of: [captureCompleted], timeout: 2)
         let item = try XCTUnwrap(model.historyItems.first)
         model.annotations = [Self.mosaicAnnotation]
+        let editableAnnotations = model.annotations
         let edited = try XCTUnwrap(model.document?.image.renderedWithCaptureLabAnnotations(model.annotations))
         let editedData = try XCTUnwrap(edited.captureLabPNGData())
         XCTAssertNotEqual(try Self.pixelData(source), try Self.pixelData(edited))
 
         XCTAssertTrue(model.finishEditing())
 
-        XCTAssertEqual(model.historyItems, [item])
+        XCTAssertEqual(model.historyItems.map(\.id), [item.id])
         XCTAssertEqual(try historyStore.data(for: item), editedData)
         XCTAssertEqual(try Self.pixelData(XCTUnwrap(NSImage(pasteboard: pasteboard))), try Self.pixelData(edited))
         // A menu holding the pre-edit item must read the replacement PNG too.
@@ -430,11 +431,11 @@ final class CaptureLabViewModelTests: XCTestCase {
         XCTAssertEqual(uploadedData, editedData)
 
         let reloadedStore = CaptureHistoryStore(environment: fixture.environment)
-        XCTAssertEqual(reloadedStore.items, [item])
+        XCTAssertEqual(reloadedStore.items.map(\.id), [item.id])
         XCTAssertEqual(try reloadedStore.data(for: item), editedData)
         model.openHistoryItem(item)
-        XCTAssertTrue(model.annotations.isEmpty)
-        XCTAssertEqual(try Self.pixelData(XCTUnwrap(model.document?.image)), try Self.pixelData(edited))
+        XCTAssertEqual(model.annotations, editableAnnotations)
+        XCTAssertEqual(try Self.pixelData(XCTUnwrap(model.renderedSnapshot()?.image)), try Self.pixelData(edited))
     }
 
     func testEveryHistoryActionUsesLatestCropFromAnotherStore() async throws {
@@ -534,7 +535,7 @@ final class CaptureLabViewModelTests: XCTestCase {
         XCTAssertTrue(model.finishEditing())
         XCTAssertFalse(model.hasImage)
         XCTAssertNil(model.finishEditingError)
-        XCTAssertEqual(model.historyItems, [item])
+        XCTAssertEqual(model.historyItems.map(\.id), [item.id])
         XCTAssertEqual(try historyStore.data(for: item), editedData)
     }
 

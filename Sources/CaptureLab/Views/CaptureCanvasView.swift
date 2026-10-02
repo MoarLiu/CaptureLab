@@ -9,6 +9,7 @@ struct CaptureCanvasView: View {
     var selectedAnnotationID: UUID?
     var cropSelection: Binding<CGRect?> = .constant(nil)
     var onSelectionChanged: (UUID?) -> Void = { _ in }
+    var cropPreset: CaptureCropPreset = .free
     var applyCrop: () -> Void = {}
     var cancelCrop: () -> Void = {}
     let captureAction: () -> Void
@@ -25,7 +26,7 @@ struct CaptureCanvasView: View {
                             .frame(width: proxy.size.width, height: proxy.size.height)
                     } else {
                         let contentSize = CaptureCanvasLayout.contentSize(
-                            imageSize: document.image.size,
+                            imageSize: document.displaySize,
                             viewportSize: proxy.size,
                             zoomLevel: zoomLevel
                         )
@@ -51,6 +52,7 @@ struct CaptureCanvasView: View {
             selectedAnnotationID: selectedAnnotationID,
             cropSelection: cropSelection,
             onSelectionChanged: onSelectionChanged,
+            cropPreset: cropPreset,
             applyCrop: applyCrop,
             cancelCrop: cancelCrop
         )

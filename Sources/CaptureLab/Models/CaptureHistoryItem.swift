@@ -7,6 +7,8 @@ struct CaptureHistoryItem: Codable, Equatable, Identifiable, Sendable {
     var fileName: String
     var pixelWidth: Int
     var pixelHeight: Int
+    var projectFileName: String? = nil
+    var modifiedAt: Date? = nil
 
     var pixelSize: CGSize {
         CGSize(width: pixelWidth, height: pixelHeight)
@@ -24,4 +26,3 @@ struct CaptureHistoryItem: Codable, Equatable, Identifiable, Sendable {
         return formatter
     }()
 }
-

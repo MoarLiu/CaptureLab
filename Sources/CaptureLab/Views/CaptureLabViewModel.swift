@@ -89,6 +89,7 @@ final class CaptureLabViewModel: ObservableObject {
         didSet { applySelectedAnnotationAppearance() }
     }
     @Published private(set) var selectedAnnotationID: UUID?
+    @Published var cropPreset: CaptureCropPreset = .free
     @Published var cropSelection: CGRect?
     @Published private(set) var historyRevision = UUID()
     @Published var ocrText = ""
@@ -230,7 +231,7 @@ final class CaptureLabViewModel: ObservableObject {
 
     var canApplyCrop: Bool {
         guard let document, let cropSelection,
-              let rect = CaptureImageCrop.pixelRect(cropSelection, pixelSize: document.pixelSize) else { return false }
+              let rect = CaptureImageCrop.pixelRect(cropSelection, pixelSize: document.canvasSize) else { return false }
         return rect.width >= 1 && rect.height >= 1
     }
 
@@ -254,7 +255,7 @@ final class CaptureLabViewModel: ObservableObject {
         let fontChanged = updated[index].appearance.fontSize != annotationAppearance.fontSize
         updated[index].appearance = annotationAppearance
         if fontChanged, let document {
-            updated[index] = updated[index].fittingFontBounds(in: document.pixelSize)
+            updated[index] = updated[index].fittingFontBounds(in: document.sourcePixelSize)
         }
         annotations = updated
     }
@@ -263,26 +264,67 @@ final class CaptureLabViewModel: ObservableObject {
     func applyCrop() -> Bool {
         CaptureEditingSession.commitPendingTextEdits()
         guard let document, let cropSelection, canApplyCrop else { return false }
-        // Crop the rendered pixels so redactions cannot be lost at a crop boundary.
-        // The undo snapshot keeps the original image and editable annotations.
-        guard let rendered = imageRenderingOperation(document.image, annotations),
-              let cropped = CaptureImageCrop.crop(rendered, selection: cropSelection) else {
+        guard let cropped = document.cropping(to: cropSelection),
+              renderImage(document: cropped) != nil else {
             reportFailure(L10n.imageExportFailed, title: L10n.cropFailedTitle)
             return false
         }
+        applyDocumentEdit(cropped)
+        statusMessage = L10n.imageCropped
+        return true
+    }
+
+    private func applyDocumentEdit(_ updated: CaptureDocument) {
         appendUndo(EditSnapshot(document: document, annotations: annotations))
         annotationRedoStack.removeAll()
         invalidateDocumentActivities()
-        isApplyingAnnotationHistory = true
-        self.document = CaptureDocument(image: cropped, sourceURL: document.sourceURL, createdAt: document.createdAt)
-        annotations = []
-        isApplyingAnnotationHistory = false
+        document = updated
         selectedAnnotationID = nil
-        self.cropSelection = nil
+        cropSelection = nil
         selectedTool = .select
         ocrText = ""
-        statusMessage = L10n.imageCropped
+    }
+
+    func adjustImage(_ adjustment: CaptureDocument.Adjustment) {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document else { return }
+        applyDocumentEdit(document.adjusting(adjustment))
+        statusMessage = L10n.text(en: "Image adjusted", zh: "图片已调整")
+    }
+
+    @discardableResult
+    func resizeOutput(to size: CGSize) -> Bool {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard var updated = document, CaptureDocumentGeometry.validSize(size) else {
+            reportFailure(L10n.text(en: "Enter whole pixel dimensions from 1 to 32768, up to 100 megapixels.",
+                                    zh: "请输入 1 至 32768 的整数像素尺寸，总像素不超过一亿。"), title: L10n.imageExportFailed)
+            return false
+        }
+        guard updated.pixelSize != size else { return true }
+        updated.id = UUID()
+        updated.geometry.outputSize = size
+        applyDocumentEdit(updated)
+        statusMessage = L10n.text(en: "Output size updated", zh: "输出尺寸已更新")
         return true
+    }
+
+    private func renderImage(document: CaptureDocument) -> NSImage? {
+        guard let rendered = imageRenderingOperation(document.image, annotations) else { return nil }
+        return document.applyingGeometry(to: rendered)
+    }
+
+    private func renderPNG(document: CaptureDocument) -> Data? {
+        guard let data = pngDataRenderingOperation(document.image, annotations) else { return nil }
+        guard document.geometry != CaptureDocumentGeometry() else { return data }
+        guard let rendered = NSImage(data: data) else { return nil }
+        return document.applyingGeometry(to: rendered)?.captureLabPNGData()
+    }
+
+    func constrainCropSelection() {
+        guard let document, let selection = cropSelection,
+              let ratio = cropPreset.ratio(in: document.canvasSize) else { return }
+        cropSelection = CaptureCropGeometry.selection(anchor: selection.origin,
+            current: CGPoint(x: selection.maxX, y: selection.maxY), size: document.canvasSize, ratio: ratio)
     }
 
     func cancelCrop() {
@@ -315,7 +357,7 @@ final class CaptureLabViewModel: ObservableObject {
     func pinCurrentCapture() {
         CaptureEditingSession.commitPendingTextEdits()
         guard let document else { return }
-        guard let rendered = imageRenderingOperation(document.image, annotations) else {
+        guard let rendered = renderImage(document: document) else {
             reportFailure(L10n.imageExportFailed, title: L10n.pinFailedTitle)
             return
         }
@@ -473,23 +515,18 @@ final class CaptureLabViewModel: ObservableObject {
         } catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
     }
 
-    /// Persist a rendered recovery image before replacing an edited/imported image.
+    /// Persist editable recovery state before replacing or closing a document.
     /// Failure leaves both the active document and its undo history available.
-    private func preserveDocumentBeforeReplacement() -> Bool {
-        guard let document,
-              currentHistoryItem == nil || !annotations.isEmpty || !annotationUndoStack.isEmpty else { return true }
+    func preserveDocumentBeforeReplacement() -> Bool {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document else { return true }
         let frozen = pendingSaveSnapshot.flatMap { $0.id == document.id && $0.annotations == annotations ? $0.data : nil }
-        guard let data = frozen ?? pngDataRenderingOperation(document.image, annotations) else {
+        guard let data = frozen ?? renderPNG(document: document) else {
             reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.historySaveFailedTitle)
             return false
         }
         do {
-            if let currentHistoryItem,
-               let updated = try historyStore.updateImage(data: data, for: currentHistoryItem, pixelSize: document.pixelSize) {
-                self.currentHistoryItem = updated
-            } else {
-                currentHistoryItem = try historyStore.record(data: data, pixelSize: document.pixelSize, createdAt: Date())
-            }
+            currentHistoryItem = try persistEditableDocument(document, preview: data)
             historyItems = historyStore.items
             return true
         } catch {
@@ -504,7 +541,8 @@ final class CaptureLabViewModel: ObservableObject {
         // An overlay retains old pixels even if another process edits its history
         // entry. Never overwrite that newer revision when editing this snapshot.
         if let item = snapshot.historyItem,
-           let durable = try? historyStore.imageSnapshot(for: item), durable.data == snapshot.data {
+           let durable = try? historyStore.imageSnapshot(for: item), durable.data == snapshot.data,
+           durable.item.fileName == item.fileName, durable.item.projectFileName == nil {
             currentHistoryItem = durable.item
         }
         return true
@@ -513,7 +551,7 @@ final class CaptureLabViewModel: ObservableObject {
     func renderedSnapshot() -> CaptureImageSnapshot? {
         CaptureEditingSession.commitPendingTextEdits()
         guard let document else { return nil }
-        guard let data = pngDataRenderingOperation(document.image, annotations) else {
+        guard let data = renderPNG(document: document) else {
             reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.imageSaveFailedTitle)
             return nil
         }
@@ -558,13 +596,7 @@ final class CaptureLabViewModel: ObservableObject {
     @discardableResult
     func importImageData(_ data: Data) -> Bool {
         guard !isCapturing else { return false }
-        do {
-            let png = try CaptureImageImport.pngData(from: data)
-            return loadImage(data: png, sourceURL: nil, status: L10n.text(en: "Image imported", zh: "图片已导入"))
-        } catch {
-            reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
-            return false
-        }
+        return loadImage(data: data, sourceURL: nil, status: L10n.text(en: "Image imported", zh: "图片已导入"))
     }
 
     func importDroppedImage(_ providers: [NSItemProvider]) -> Bool {
@@ -587,7 +619,8 @@ final class CaptureLabViewModel: ObservableObject {
                         }
                         let scoped = url.startAccessingSecurityScopedResource()
                         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                        _ = self.importImageData(try CaptureImageImport.data(from: url))
+                        if url.pathExtension.lowercased() == "capturelab" { _ = self.openProject(at: url) }
+                        else { _ = self.importImageData(try CaptureImageImport.data(from: url)) }
                     } else { _ = self.importImageData(data) }
                 } catch { self.reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
             }
@@ -598,7 +631,7 @@ final class CaptureLabViewModel: ObservableObject {
     func openImage() {
         let panel = NSOpenPanel()
         panel.title = L10n.openImageTitle
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = [.image, .captureLabProject]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -607,7 +640,8 @@ final class CaptureLabViewModel: ObservableObject {
             return
         }
 
-        loadImage(from: url, sourceURL: url, status: L10n.opened(url.lastPathComponent))
+        if url.pathExtension.lowercased() == "capturelab" { _ = openProject(at: url) }
+        else { loadImage(from: url, sourceURL: url, status: L10n.opened(url.lastPathComponent)) }
     }
 
     @discardableResult
@@ -617,7 +651,7 @@ final class CaptureLabViewModel: ObservableObject {
             NSSound.beep()
             return false
         }
-        guard let rendered = imageRenderingOperation(document.image, annotations) else {
+        guard let rendered = renderImage(document: document) else {
             reportFailure(L10n.imageCopyFailed, title: L10n.imageCopyFailedTitle)
             return false
         }
@@ -649,7 +683,7 @@ final class CaptureLabViewModel: ObservableObject {
         // while NSSavePanel is open, so both the source image and annotations must
         // already be frozen into immutable bytes before another capture can replace
         // the current document.
-        guard let data = pngDataRenderingOperation(document.image, annotations) else {
+        guard let data = renderPNG(document: document) else {
             reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.imageSaveFailedTitle)
             return
         }
@@ -677,7 +711,7 @@ final class CaptureLabViewModel: ObservableObject {
             NSSound.beep()
             return
         }
-        guard let data = document.image.captureLabPNGData(annotations: annotations) else {
+        guard let data = renderPNG(document: document) else {
             presentUploadFailure(CloudflareR2Error.imageExportFailed)
             return
         }
@@ -686,20 +720,83 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func openHistoryItem(_ item: CaptureHistoryItem) {
+        guard !isCapturing else { return }
         do {
-            let isCurrentItem = currentHistoryItem?.id == item.id
-            if isCurrentItem {
-                CaptureEditingSession.commitPendingTextEdits()
-                guard preserveDocumentBeforeReplacement() else { return }
-            }
-            let snapshot = try historyImageSnapshot(for: item)
-            if loadImage(data: snapshot.data, sourceURL: historyStore.url(for: snapshot.item), status: L10n.historyCaptureOpened,
-                         preserveExisting: !isCurrentItem) {
+            let isCurrent = currentHistoryItem?.id == item.id
+            if isCurrent, !preserveDocumentBeforeReplacement() { return }
+            let snapshot = try historyStore.editableSnapshot(for: currentHistoryItem.flatMap { isCurrent ? $0 : nil } ?? item)
+            if let data = snapshot.project {
+                let state = try CaptureProjectStore.decode(data, sourceURL: historyStore.url(for: snapshot.item))
+                guard isCurrent || preserveDocumentBeforeReplacement() else { return }
+                installProject(state, historyItem: snapshot.item)
+            } else if loadImage(data: snapshot.preview, sourceURL: historyStore.url(for: snapshot.item), status: L10n.historyCaptureOpened, preserveExisting: !isCurrent) {
                 currentHistoryItem = snapshot.item
             }
+            historyItems = historyStore.items
+        } catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+    }
+
+    private func persistEditableDocument(_ document: CaptureDocument, preview: Data) throws -> CaptureHistoryItem {
+        let project = try CaptureProjectStore.encode(document: document, annotations: annotations)
+        return try historyStore.saveEditable(preview: preview, project: project, for: currentHistoryItem,
+                                             pixelSize: document.pixelSize, createdAt: document.createdAt)
+    }
+
+    func openProject() {
+        guard !isCapturing else { return }
+        let panel = NSOpenPanel()
+        panel.title = L10n.text(en: "Open Editable Project", zh: "打开可编辑项目")
+        panel.allowedContentTypes = [.captureLabProject]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        _ = openProject(at: url)
+    }
+
+    @discardableResult
+    func openProject(at url: URL) -> Bool {
+        guard !isCapturing else { return false }
+        do {
+            let state = try CaptureProjectStore.read(url)
+            guard preserveDocumentBeforeReplacement() else { return false }
+            installProject(state, historyItem: nil)
+            return true
         } catch {
             reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
+            return false
         }
+    }
+
+    private func installProject(_ state: CaptureProjectStore.State, historyItem: CaptureHistoryItem?) {
+        importRequestID = UUID()
+        invalidateDocumentActivities()
+        resetAnnotations()
+        document = state.document
+        isApplyingAnnotationHistory = true
+        annotations = state.annotations
+        isApplyingAnnotationHistory = false
+        currentHistoryItem = historyItem
+        ocrText = ""
+        finishEditingError = nil
+        statusMessage = L10n.text(en: "Editable project opened", zh: "已打开可编辑项目")
+    }
+
+    func saveProject() {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document else { return }
+        do {
+            // Freeze before the modal panel, just like ordinary image export.
+            let data = try CaptureProjectStore.encode(document: document, annotations: annotations)
+            let panel = NSSavePanel()
+            panel.title = L10n.text(en: "Save Editable Project", zh: "保存可编辑项目")
+            panel.message = L10n.text(en: "Contains the original image and editable annotations. Use Export Image when sharing a redacted image.",
+                                      zh: "项目包含原图和可编辑标注。分享已遮挡内容时，请使用“保存图片”。")
+            panel.allowedContentTypes = [.captureLabProject]
+            panel.nameFieldStringValue = "CaptureLab.capturelab"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try CaptureProjectStore.write(data, to: url)
+            statusMessage = L10n.saved(url.lastPathComponent)
+        } catch { reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle) }
     }
 
     func copyHistoryItem(_ item: CaptureHistoryItem) {
@@ -724,7 +821,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
         // Freeze one rendered image for history and the clipboard. Do not clear
         // the editor until the durable history entry contains these same pixels.
-        guard let rendered = imageRenderingOperation(document.image, annotations),
+        guard let rendered = renderImage(document: document),
               let data = rendered.captureLabPNGData() else {
             statusMessage = CaptureLabError.imageExportFailed.localizedDescription
             finishEditingError = statusMessage
@@ -733,18 +830,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
 
         do {
-            if let currentHistoryItem,
-               let updated = try historyStore.updateImage(data: data, for: currentHistoryItem, pixelSize: document.pixelSize) {
-                self.currentHistoryItem = updated
-            } else {
-                // Imported images, failed initial history writes, and captures
-                // evicted by retention still need a durable edited result.
-                currentHistoryItem = try historyStore.record(
-                    data: data,
-                    pixelSize: document.pixelSize,
-                    createdAt: document.createdAt
-                )
-            }
+            currentHistoryItem = try persistEditableDocument(document, preview: data)
             historyItems = historyStore.items
         } catch {
             historyItems = historyStore.items
@@ -846,7 +932,7 @@ final class CaptureLabViewModel: ObservableObject {
 
     func recognizeText() {
         directRecognition.cancel()
-        guard let image = document?.image.captureLabCGImage() else {
+        guard let document, let image = document.applyingGeometry(to: document.image)?.captureLabCGImage() else {
             reportFailure(CaptureLabError.ocrImageUnavailable.localizedDescription, title: L10n.ocrFailedTitle)
             return
         }
@@ -995,7 +1081,10 @@ final class CaptureLabViewModel: ObservableObject {
 
     @discardableResult
     private func loadImage(from url: URL, sourceURL: URL?, status: String) -> Bool {
-        guard let data = try? Data(contentsOf: url) else {
+        guard url.isFileURL,
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= CaptureImageImport.maximumBytes,
+              let data = try? Data(contentsOf: url) else {
             reportFailure(CaptureLabError.imageLoadFailed.localizedDescription, title: L10n.imageOpenFailedTitle)
             return false
         }
@@ -1004,7 +1093,8 @@ final class CaptureLabViewModel: ObservableObject {
 
     @discardableResult
     private func loadImage(data: Data, sourceURL: URL?, status: String, preserveExisting: Bool = true) -> Bool {
-        guard let image = NSImage(data: data), image.isValid else {
+        guard let png = try? CaptureImageImport.pngData(from: data),
+              let image = NSImage(data: png), image.isValid else {
             reportFailure(CaptureLabError.imageLoadFailed.localizedDescription, title: L10n.imageOpenFailedTitle)
             return false
         }
@@ -1045,11 +1135,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
 
         do {
-            currentHistoryItem = try historyStore.record(
-                data: data,
-                pixelSize: document.pixelSize,
-                createdAt: document.createdAt
-            )
+            currentHistoryItem = try persistEditableDocument(document, preview: data)
             historyItems = historyStore.items
             return nil
         } catch {
@@ -1158,7 +1244,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.7.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.8.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

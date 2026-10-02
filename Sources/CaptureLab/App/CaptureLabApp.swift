@@ -13,7 +13,9 @@ struct CaptureLabApp: App {
     init() {
         let r2SettingsStore = CloudflareR2SettingsStore()
         _r2SettingsStore = StateObject(wrappedValue: r2SettingsStore)
-        _model = StateObject(wrappedValue: CaptureLabViewModel(r2SettingsStore: r2SettingsStore))
+        let model = CaptureLabViewModel(r2SettingsStore: r2SettingsStore)
+        _model = StateObject(wrappedValue: model)
+        CaptureLabAppDelegate.documentModel = model
     }
 
     var body: some Scene {
@@ -104,6 +106,7 @@ struct CaptureLabApp: App {
 
     private func configureGlobalHotKey() {
         model.presentEditor = showMainWindow
+        appDelegate.openPendingProjects()
         model.presentRecognition = { showUtilityWindow("recognition-results") }
         model.presentCaptureLauncher = { showUtilityWindow("capture-launcher") }
         for action in CaptureAction.allCases {
@@ -155,6 +158,26 @@ struct CaptureLabApp: App {
 final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
     static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("CaptureLab.main-window")
     private static var shouldSuppressNextMainWindow = true
+    static weak var documentModel: CaptureLabViewModel?
+    private var pendingProjectURLs: [URL] = []
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Self.documentModel?.preserveDocumentBeforeReplacement() == false ? .terminateCancel : .terminateNow
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        pendingProjectURLs.append(contentsOf: urls.filter { $0.pathExtension.lowercased() == "capturelab" })
+        openPendingProjects()
+    }
+
+    func openPendingProjects() {
+        guard let model = Self.documentModel, let present = model.presentEditor else { return }
+        let urls = pendingProjectURLs
+        pendingProjectURLs = []
+        for url in urls {
+            if model.openProject(at: url) { present() }
+        }
+    }
 
     static func allowNextMainWindowPresentation() {
         shouldSuppressNextMainWindow = false

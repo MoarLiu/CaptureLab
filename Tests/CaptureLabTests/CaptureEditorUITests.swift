@@ -67,9 +67,23 @@ final class CaptureEditorUITests: XCTestCase {
             inspectFixtureView(hosting)
         }
 
+        model.annotations = [CaptureAnnotation.text(normalizedRect: CGRect(x: 0.1, y: 0.2, width: 0.6, height: 0.2), text: "CaptureLab 0.8.0")]
+        model.adjustImage(.rotateClockwise)
+        model.adjustImage(.flipHorizontal)
+        XCTAssertTrue(model.resizeOutput(to: CGSize(width: 320, height: 420)))
         model.selectedTool = .crop
+        model.cropPreset = .fourThree
         model.cropSelection = CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)
+        model.constrainCropSelection()
         drainUI()
+        hosting.layoutSubtreeIfNeeded()
+        window.display()
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, 1_080)
+        if let outputPath = ProcessInfo.processInfo.environment["CAPTURELAB_UI_SMOKE_CROP_OUTPUT"] {
+            let croppedUI = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            hosting.cacheDisplay(in: hosting.bounds, to: croppedUI)
+            try XCTUnwrap(croppedUI.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: outputPath))
+        }
         let escape = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil,
