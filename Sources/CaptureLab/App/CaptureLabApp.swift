@@ -34,6 +34,12 @@ struct CaptureLabApp: App {
         }
         .defaultSize(width: 780, height: 580)
 
+        Window(L10n.workflowSettings, id: "workflow-settings") {
+            CaptureWorkflowSettingsView(model: model)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 500, height: 620)
+
         Window(L10n.shortcutSettingsTitle, id: "shortcut-settings") {
             ShortcutSettingsView(
                 shortcutStore: shortcutStore,
@@ -57,7 +63,8 @@ struct CaptureLabApp: App {
                 showMainWindow: showMainWindow,
                 showHistory: showHistory,
                 showShortcutSettings: showShortcutSettings,
-                showR2Settings: showR2Settings
+                showR2Settings: showR2Settings,
+                showWorkflowSettings: showWorkflowSettings
             )
         } label: {
             Label(L10n.appName, systemImage: "viewfinder")
@@ -69,7 +76,8 @@ struct CaptureLabApp: App {
                 shortcutStore: shortcutStore,
                 showMainWindow: showMainWindow,
                 showHistory: showHistory,
-                showR2Settings: showR2Settings
+                showR2Settings: showR2Settings,
+                showWorkflowSettings: showWorkflowSettings
             )
         }
     }
@@ -82,6 +90,7 @@ struct CaptureLabApp: App {
     }
 
     private func configureGlobalHotKey() {
+        model.presentEditor = showMainWindow
         _ = globalHotKeyController.configure(shortcut: shortcutStore.captureShortcut) {
             model.capture(.region, onSuccess: showMainWindow)
         }
@@ -102,6 +111,12 @@ struct CaptureLabApp: App {
             ? nil
             : globalHotKeyController.registrationError
                 ?? L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
+    }
+
+    private func showWorkflowSettings() {
+        NSApp.setActivationPolicy(.regular)
+        openWindow(id: "workflow-settings")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func showShortcutSettings() {

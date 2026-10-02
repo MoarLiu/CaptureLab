@@ -7,8 +7,13 @@ struct CaptureLabCommands: Commands {
     let showMainWindow: () -> Void
     let showHistory: () -> Void
     let showR2Settings: () -> Void
+    var showWorkflowSettings: () -> Void = {}
 
     var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button(L10n.workflowSettings, action: showWorkflowSettings)
+                .keyboardShortcut(",", modifiers: .command)
+        }
         CommandGroup(after: .appInfo) {
             Button(model.isCheckingForUpdates ? L10n.checkingForUpdates : L10n.checkForUpdates) {
                 model.checkForUpdates()
@@ -54,8 +59,15 @@ struct CaptureLabCommands: Commands {
                 .disabled(model.isCapturing)
             }
 
+            Button(L10n.pasteImage) {
+                model.pasteImage()
+                if model.hasImage { showMainWindow() }
+            }
+            .disabled(model.isCapturing)
+
             Button(L10n.openImage) {
                 model.openImage()
+                if model.hasImage { showMainWindow() }
             }
             .keyboardShortcut("o", modifiers: .command)
             .disabled(model.isCapturing)
@@ -211,8 +223,18 @@ struct CaptureLabMenuBarView: View {
     let showHistory: () -> Void
     let showShortcutSettings: () -> Void
     let showR2Settings: () -> Void
+    var showWorkflowSettings: () -> Void = {}
 
     var body: some View {
+        Button(L10n.workflowSettings, action: showWorkflowSettings)
+        CaptureOverlayMenu(controller: model.overlayController)
+        CapturePinMenu()
+        Divider()
+        Button(L10n.pasteImage) {
+            model.pasteImage()
+            if model.hasImage { showMainWindow() }
+        }
+        .disabled(model.isCapturing)
         Button(L10n.showCaptureLab, action: showMainWindow)
         Button(L10n.historyBrowserTitle, action: showHistory)
 
@@ -399,5 +421,23 @@ private extension CaptureTool {
         case .crop:
             return "k"
         }
+    }
+}
+
+private struct CaptureOverlayMenu: View {
+    @ObservedObject var controller: CaptureQuickAccessController
+    var body: some View {
+        Button(L10n.overlayRestore, action: controller.restoreLast)
+            .disabled(controller.lastClosed == nil)
+        Button(controller.isTemporarilyHidden ? L10n.overlayShow : L10n.overlayHide, action: controller.toggleHidden)
+            .disabled(controller.entries.isEmpty)
+    }
+}
+
+private struct CapturePinMenu: View {
+    @ObservedObject var controller = CapturePinController.shared
+    var body: some View {
+        Button(L10n.pinUnlockAll, action: controller.unlockAll).disabled(controller.windows.isEmpty)
+        Button(L10n.pinCloseAll, action: controller.closeAll).disabled(controller.windows.isEmpty)
     }
 }

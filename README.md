@@ -6,14 +6,17 @@ Current features:
 
 - global screenshot shortcut from the menu bar app
 - region, full screen, window, and delayed region capture modes
-- full thumbnail browser for all 30 retained captures, with refresh, open, copy,
+- configurable history retention (30, 100, or 300 captures and optional 1/7/30-day limits)
+- full thumbnail browser for all retained captures, with refresh, open, copy,
   save as, Cloudflare R2 upload, pin, and confirmed deletion actions
 - image preview with Fit, 50%, 100%, and 200% zoom
 - arrow, line, rectangle, counter, brush, text, text highlight, and mosaic markup
 - annotation color, line width, and font size controls for new and selected markup
 - crop selection with source-pixel dimensions, Enter to apply, and Esc to cancel
 - undo and redo for annotation edits and crops
-- floating pinned screenshots with resize and opacity controls
+- floating pinned screenshots with resize, opacity, click-through locking, and arrow-key movement
+- optional quick-access overlay with per-capture copy, save, edit, pin, upload, and drag actions
+- image paste and drag-in import, plus PNG file-promise drag-out from editor, history, and overlay
 - copy/save rendered PNG output
 - optional Cloudflare R2 upload for rendered screenshots
 - optional local Vision OCR tool with editable OCR text and copy support
@@ -25,6 +28,26 @@ including when the preview is scaled or the image is captured on a Retina screen
 Pinned screenshots keep a snapshot of the edited image and close independently
 with Esc or Command-W. CaptureLab temporarily hides its windows, including pins,
 while taking a new screenshot.
+
+Screenshot Settings (Command-comma or the menu bar) controls the post-capture
+behavior, overlay corner/size/timeout/display, and history retention. The default
+continues to copy and open the editor. Overlay and copy-only modes preserve the
+current edit. Overlays keep immutable capture pixels, so switching documents or
+deleting history cannot change the image attached to their actions. Auto-close
+pauses during hovering, dragging, and capture; the menu bar can hide overlays or
+restore the most recently closed one.
+
+Paste Image and drag-in open independent images. Before replacement, edited or
+imported content is preserved as a rendered history image; a failed save keeps
+the current editor intact. Drag the hand icon to deliver the rendered PNG to a
+receiving app. Text fields retain their normal Command-V behavior. Unlock All
+Pins and Close All Pins stay available in the menu bar while pins are locked;
+arrow keys move an unlocked pin by one point, or ten with Shift.
+
+Retention changes preview the affected capture count before deletion and require
+a new confirmation if concurrent captures would expand that deletion set. Time
+limits are enforced on startup, capture, and history refresh. Existing exported
+files are independent of history cleanup.
 
 Build and run:
 

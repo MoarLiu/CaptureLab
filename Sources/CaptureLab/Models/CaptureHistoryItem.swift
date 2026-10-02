@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-struct CaptureHistoryItem: Codable, Equatable, Identifiable {
+struct CaptureHistoryItem: Codable, Equatable, Identifiable, Sendable {
     var id: UUID
     var createdAt: Date
     var fileName: String

@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0 - 2026-10-02
+
+- Added configurable post-capture actions: editor, quick-access overlay, and copy only.
+  Overlay and copy-only capture preserve the active editing session.
+- Added immutable quick-access snapshots with copy, save, edit, pin, R2 upload,
+  and drag actions; configurable corner, size, timeout, screen following,
+  multiple-capture navigation, temporary hiding, and restore-last support.
+- Added image paste and drag-in import, with recovery of outgoing edits; added
+  rendered PNG file-promise drag-out from the editor, overlay, and history.
+- Added click-through pin locking, one-point arrow-key movement (ten with Shift),
+  and menu-bar commands to unlock or close all pins.
+- Added history count and age limits stored atomically with the index; retention
+  previews and reconfirms newly affected items after concurrent captures.
+- Added an independent scrolling-capture feasibility probe; scrolling capture
+  is not part of the application in this version.
+
+Artifacts:
+
+- `CaptureLab-0.6.0-macos-arm64.dmg`
+- SHA-256: `41b2da5c32b49ee7a98a811e58d34608db3acf867bf9fd240ec25856f2d214ab`
+- `CaptureLab-0.6.0-macos-arm64.dmg.sha256`
+- `CaptureLab-0.6.0-macos-arm64.dmg.sig`
+- `CaptureLab-0.6.0-macos-x86_64.dmg`
+- SHA-256: `388f62f30bf6142aa9f31bd4e78f6c5328aa9b7aaeee70911b537e3f7a4a57ec`
+- `CaptureLab-0.6.0-macos-x86_64.dmg.sha256`
+- `CaptureLab-0.6.0-macos-x86_64.dmg.sig`
+
+Known release notes:
+
+- Requires macOS 13 or later. Choose arm64 for Apple Silicon or x86_64 for Intel.
+- The app uses a stable local self-signed certificate rather than Apple
+  Developer ID and is not notarized. macOS may require manual approval on
+  first launch.
+- Shortcut recording still has limitations for shortcuts already assigned to
+  application menu commands and some shifted or non-US keyboard combinations.
+- Cross-app drag-and-drop, mixed-scale multiple displays, Intel hardware,
+  macOS 13 hardware, and real-account R2 upload still need manual acceptance.
+- Quit older CaptureLab copies before upgrading. Older versions retain their
+  fixed 30-item history limit and do not understand the new retention settings.
+
 ## 0.5.1 - 2026-10-02
 
 - Kept complete counter numbers inside their circles when resizing, with

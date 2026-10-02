@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CaptureLabRootView: View {
     @ObservedObject var model: CaptureLabViewModel
@@ -34,17 +35,25 @@ struct CaptureLabRootView: View {
             .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
-            Text(model.statusMessage)
+            HStack(spacing: 12) {
+                Text(model.statusMessage).help(model.statusMessage)
+                Spacer(minLength: 8)
+                Button(L10n.pasteImage, action: model.pasteImage)
+                    .disabled(model.isCapturing)
+                CaptureImageDragSource(snapshot: model.renderedSnapshot, isEnabled: model.hasImage)
+                    .frame(width: 28, height: 26)
+            }
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .help(model.statusMessage)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .background(WindowChromeConfigurator())
+        .background(CaptureImagePasteInstaller(paste: model.pasteImage))
+        .onDrop(of: [UTType.fileURL, .image], isTargeted: nil, perform: model.importDroppedImage)
         .background(CaptureWindowReader(window: $window))
         .overlay(alignment: .top) {
             VStack(spacing: 0) {

@@ -16,7 +16,7 @@ struct CaptureHistoryView: View {
             HStack {
                 Text(L10n.historyBrowserTitle)
                     .font(.title2.bold())
-                Text("\(model.historyItems.count) / \(CaptureHistoryStore.maxItemCount)")
+                Text("\(model.historyItems.count) / \(model.historyStore.retention.maximumCount)")
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
@@ -106,6 +106,8 @@ struct CaptureHistoryView: View {
                     Image(systemName: "pin")
                 }
                 .help(L10n.historyPin)
+                CaptureImageDragSource(snapshot: { model.snapshot(for: item) })
+                    .frame(width: 26, height: 26)
                 Menu {
                     actions(for: item)
                 } label: {

@@ -105,7 +105,13 @@ final class CaptureLabViewModel: ObservableObject {
     private let updateCheckService = UpdateCheckService()
     private let updateInstallService = UpdateInstallService()
     private let r2SettingsStore: CloudflareR2SettingsStore
-    private let historyStore: CaptureHistoryStore
+    let historyStore: CaptureHistoryStore
+    let workflowSettings: CaptureWorkflowSettings
+    let overlayController = CaptureQuickAccessController()
+    @Published private(set) var latestCapture: CaptureImageSnapshot?
+    private var importRequestID = UUID()
+    private var pendingSaveSnapshot: (id: UUID, annotations: [CaptureAnnotation], data: Data)?
+    var presentEditor: (() -> Void)?
     private let pasteboard: NSPasteboard
     private let windowVisibilityCoordinator: any CaptureWindowVisibilityCoordinating
     private let captureOperation: CaptureOperation
@@ -135,6 +141,7 @@ final class CaptureLabViewModel: ObservableObject {
     init() {
         self.r2SettingsStore = CloudflareR2SettingsStore()
         self.historyStore = CaptureHistoryStore()
+        self.workflowSettings = CaptureWorkflowSettings()
         self.pasteboard = .general
         self.windowVisibilityCoordinator = SystemCaptureWindowVisibilityCoordinator()
         self.captureOperation = Self.defaultCaptureOperation
@@ -152,6 +159,7 @@ final class CaptureLabViewModel: ObservableObject {
     init(r2SettingsStore: CloudflareR2SettingsStore) {
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = CaptureHistoryStore()
+        self.workflowSettings = CaptureWorkflowSettings()
         self.pasteboard = .general
         self.windowVisibilityCoordinator = SystemCaptureWindowVisibilityCoordinator()
         self.captureOperation = Self.defaultCaptureOperation
@@ -178,10 +186,12 @@ final class CaptureLabViewModel: ObservableObject {
         imageRenderingOperation: @escaping ImageRenderingOperation = CaptureLabViewModel.defaultImageRenderingOperation,
         pngDataRenderingOperation: @escaping PNGDataRenderingOperation = CaptureLabViewModel.defaultPNGDataRenderingOperation,
         saveDestinationOperation: @escaping SaveDestinationOperation = CaptureLabViewModel.defaultSaveDestinationOperation,
-        pinOperation: @escaping PinOperation = CaptureLabViewModel.defaultPinOperation
+        pinOperation: @escaping PinOperation = CaptureLabViewModel.defaultPinOperation,
+        workflowSettings: CaptureWorkflowSettings? = nil
     ) {
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = historyStore
+        self.workflowSettings = workflowSettings ?? CaptureWorkflowSettings(defaults: nil)
         self.pasteboard = pasteboard
         self.windowVisibilityCoordinator = windowVisibilityCoordinator ?? SystemCaptureWindowVisibilityCoordinator()
         self.captureOperation = captureOperation
@@ -353,6 +363,7 @@ final class CaptureLabViewModel: ObservableObject {
         isCapturing = true
         statusMessage = mode.promptTitle
 
+        overlayController.isCapturing = true
         let restoration = windowVisibilityCoordinator.hideVisibleWindowsForCapture()
         let captureOperation = self.captureOperation
         let windowVisibilityCoordinator = self.windowVisibilityCoordinator
@@ -378,16 +389,10 @@ final class CaptureLabViewModel: ObservableObject {
             }
 
             self.isCapturing = false
+            self.overlayController.isCapturing = false
             switch result {
             case .success(let url):
-                if self.loadImage(from: url, sourceURL: nil, status: mode.completedTitle) {
-                    let historyError = self.recordCurrentCaptureInHistory()
-                    let didCopy = self.copyRenderedImage(successStatus: mode.completedAndCopiedTitle)
-                    if didCopy, let historyError {
-                        self.reportFailure(L10n.captureCopiedButHistorySaveFailed(historyError), title: L10n.historySaveFailedTitle)
-                    }
-                    onSuccess?()
-                }
+                self.receiveCapture(url: url, mode: mode, showEditor: onSuccess ?? self.presentEditor)
             case .failure(let error):
                 if error is CancellationError {
                     self.statusMessage = L10n.captureCancelled
@@ -398,6 +403,175 @@ final class CaptureLabViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func receiveCapture(url: URL, mode: CaptureMode, showEditor: (() -> Void)?) {
+        let options = workflowSettings.options.validated
+        if options.afterCapture == .editor {
+            guard loadImage(from: url, sourceURL: nil, status: mode.completedTitle) else { return }
+            let historyError = recordCurrentCaptureInHistory()
+            let didCopy = copyRenderedImage(successStatus: mode.completedAndCopiedTitle)
+            if didCopy, let historyError {
+                reportFailure(L10n.captureCopiedButHistorySaveFailed(historyError), title: L10n.historySaveFailedTitle)
+            }
+            if let document, let data = document.image.captureLabPNGData() {
+                latestCapture = CaptureImageSnapshot(data: data, historyItem: currentHistoryItem)
+            }
+            showEditor?()
+            return
+        }
+        do {
+            let data = try CaptureImageImport.data(from: url)
+            var item: CaptureHistoryItem?
+            var historyFailure: Error?
+            let image = NSImage(data: data)!
+            do {
+                item = try historyStore.record(data: data, pixelSize: image.captureLabPixelSize)
+                historyItems = historyStore.items
+            } catch { historyFailure = error }
+            let snapshot = CaptureImageSnapshot(data: data, historyItem: item)
+            latestCapture = snapshot
+            _ = copyRenderedImage(image, successStatus: mode.completedAndCopiedTitle)
+            if let historyFailure {
+                reportFailure(L10n.captureCopiedButHistorySaveFailed(historyFailure.localizedDescription), title: L10n.historySaveFailedTitle)
+            }
+            if options.afterCapture == .overlay {
+                let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+                overlayController.show(.init(snapshot: snapshot,
+                    screenNumber: screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                    edit: { [weak self] in
+                        guard let self, self.openSnapshot(snapshot) else { return false }
+                        showEditor?()
+                        return true
+                    },
+                    copy: { [weak self] in self?.copySnapshot(snapshot) },
+                    save: { [weak self] in self?.saveSnapshot(snapshot) },
+                    pin: { [weak self] in self?.pinSnapshot(snapshot) },
+                    upload: { [weak self] in self?.uploadSnapshot(snapshot) }), options: options)
+            }
+        } catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+    }
+
+    /// Persist a rendered recovery image before replacing an edited/imported image.
+    /// Failure leaves both the active document and its undo history available.
+    private func preserveDocumentBeforeReplacement() -> Bool {
+        guard let document,
+              currentHistoryItem == nil || !annotations.isEmpty || !annotationUndoStack.isEmpty else { return true }
+        let frozen = pendingSaveSnapshot.flatMap { $0.id == document.id && $0.annotations == annotations ? $0.data : nil }
+        guard let data = frozen ?? pngDataRenderingOperation(document.image, annotations) else {
+            reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.historySaveFailedTitle)
+            return false
+        }
+        do {
+            if let currentHistoryItem,
+               let updated = try historyStore.updateImage(data: data, for: currentHistoryItem, pixelSize: document.pixelSize) {
+                self.currentHistoryItem = updated
+            } else {
+                currentHistoryItem = try historyStore.record(data: data, pixelSize: document.pixelSize, createdAt: Date())
+            }
+            historyItems = historyStore.items
+            return true
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.historySaveFailedTitle)
+            return false
+        }
+    }
+
+    @discardableResult
+    func openSnapshot(_ snapshot: CaptureImageSnapshot) -> Bool {
+        guard !isCapturing, loadImage(data: snapshot.data, sourceURL: nil, status: L10n.historyCaptureOpened) else { return false }
+        // An overlay retains old pixels even if another process edits its history
+        // entry. Never overwrite that newer revision when editing this snapshot.
+        if let item = snapshot.historyItem,
+           let durable = try? historyStore.imageSnapshot(for: item), durable.data == snapshot.data {
+            currentHistoryItem = durable.item
+        }
+        return true
+    }
+
+    func renderedSnapshot() -> CaptureImageSnapshot? {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document else { return nil }
+        guard let data = pngDataRenderingOperation(document.image, annotations) else {
+            reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.imageSaveFailedTitle)
+            return nil
+        }
+        return CaptureImageSnapshot(data: data, fileName: defaultSaveName(for: document))
+    }
+
+    func snapshot(for item: CaptureHistoryItem) -> CaptureImageSnapshot? {
+        do {
+            let value = try historyImageSnapshot(for: item)
+            return CaptureImageSnapshot(data: value.data, fileName: value.item.fileName, historyItem: value.item)
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
+            return nil
+        }
+    }
+
+    func copySnapshot(_ snapshot: CaptureImageSnapshot) {
+        guard let image = snapshot.image else { return }
+        _ = copyRenderedImage(image, successStatus: L10n.imageCopied)
+    }
+    func saveSnapshot(_ snapshot: CaptureImageSnapshot) {
+        guard let url = saveDestinationOperation(snapshot.fileName) else { return }
+        do {
+            try snapshot.data.write(to: url, options: .atomic)
+            statusMessage = L10n.saved(url.lastPathComponent)
+        } catch { reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle) }
+    }
+    func pinSnapshot(_ snapshot: CaptureImageSnapshot) {
+        guard let image = snapshot.image else { return }
+        pinOperation(image, snapshot.fileName)
+    }
+    func uploadSnapshot(_ snapshot: CaptureImageSnapshot) {
+        uploadPNGData(snapshot.data, fileName: snapshot.fileName)
+    }
+
+    func pasteImage() {
+        guard !isCapturing else { return }
+        do { _ = importImageData(try CaptureImageImport.data(from: pasteboard)) }
+        catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+    }
+
+    @discardableResult
+    func importImageData(_ data: Data) -> Bool {
+        guard !isCapturing else { return false }
+        do {
+            let png = try CaptureImageImport.pngData(from: data)
+            return loadImage(data: png, sourceURL: nil, status: L10n.text(en: "Image imported", zh: "图片已导入"))
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
+            return false
+        }
+    }
+
+    func importDroppedImage(_ providers: [NSItemProvider]) -> Bool {
+        guard !isCapturing, let provider = providers.first else { return false }
+        let type = provider.registeredTypeIdentifiers.first { $0 == UTType.fileURL.identifier }
+            ?? provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true }
+        guard let type else { return false }
+        let token = UUID()
+        importRequestID = token
+        let generation = documentGeneration
+        provider.loadDataRepresentation(forTypeIdentifier: type) { [weak self] data, error in
+            let failure = error?.localizedDescription
+            Task { @MainActor [weak self] in
+                guard let self, self.importRequestID == token, self.documentGeneration == generation else { return }
+                do {
+                    guard let data else { throw CaptureLabError.captureFailed(failure ?? CaptureLabError.imageLoadFailed.localizedDescription) }
+                    if type == UTType.fileURL.identifier {
+                        guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else {
+                            throw CaptureLabError.imageLoadFailed
+                        }
+                        let scoped = url.startAccessingSecurityScopedResource()
+                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                        _ = self.importImageData(try CaptureImageImport.data(from: url))
+                    } else { _ = self.importImageData(data) }
+                } catch { self.reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+            }
+        }
+        return true
     }
 
     func openImage() {
@@ -458,6 +632,9 @@ final class CaptureLabViewModel: ObservableObject {
             reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.imageSaveFailedTitle)
             return
         }
+        let previousSnapshot = pendingSaveSnapshot
+        pendingSaveSnapshot = (document.id, annotations, data)
+        defer { pendingSaveSnapshot = previousSnapshot }
         guard let url = saveDestinationOperation(defaultSaveName(for: document)) else {
             return
         }
@@ -489,8 +666,14 @@ final class CaptureLabViewModel: ObservableObject {
 
     func openHistoryItem(_ item: CaptureHistoryItem) {
         do {
+            let isCurrentItem = currentHistoryItem?.id == item.id
+            if isCurrentItem {
+                CaptureEditingSession.commitPendingTextEdits()
+                guard preserveDocumentBeforeReplacement() else { return }
+            }
             let snapshot = try historyImageSnapshot(for: item)
-            if loadImage(data: snapshot.data, sourceURL: historyStore.url(for: snapshot.item), status: L10n.historyCaptureOpened) {
+            if loadImage(data: snapshot.data, sourceURL: historyStore.url(for: snapshot.item), status: L10n.historyCaptureOpened,
+                         preserveExisting: !isCurrentItem) {
                 currentHistoryItem = snapshot.item
             }
         } catch {
@@ -798,7 +981,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func loadImage(data: Data, sourceURL: URL?, status: String) -> Bool {
+    private func loadImage(data: Data, sourceURL: URL?, status: String, preserveExisting: Bool = true) -> Bool {
         guard let image = NSImage(data: data), image.isValid else {
             reportFailure(CaptureLabError.imageLoadFailed.localizedDescription, title: L10n.imageOpenFailedTitle)
             return false
@@ -808,6 +991,8 @@ final class CaptureLabViewModel: ObservableObject {
         // before resetting bindings. Otherwise a later export could let that
         // stale canvas publish its annotations into the replacement document.
         CaptureEditingSession.commitPendingTextEdits()
+        guard !preserveExisting || preserveDocumentBeforeReplacement() else { return false }
+        importRequestID = UUID()
         invalidateDocumentActivities()
         document = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: Date())
         currentHistoryItem = nil
@@ -954,7 +1139,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.5.1"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.6.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

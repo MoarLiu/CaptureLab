@@ -11,7 +11,7 @@ enum L10n {
         return code.hasPrefix("zh") ? .chinese : .english
     }
 
-    private static func text(en: String, zh: String) -> String {
+    static func text(en: String, zh: String) -> String {
         language == .chinese ? zh : en
     }
 
@@ -339,4 +339,18 @@ enum L10n {
     static func r2UploadNetworkError(_ message: String) -> String {
         text(en: "Cloudflare R2 upload failed: \(message)", zh: "Cloudflare R2 上传失败：\(message)")
     }
+}
+
+// Screenshot workflow controls shared by the editor, overlay and menu bar.
+extension L10n {
+    static var workflowSettings: String { text(en: "Screenshot Settings…", zh: "截图设置…") }
+    static var dragImage: String { text(en: "Drag image to another app", zh: "拖出图片到其他应用") }
+    static var pasteImage: String { text(en: "Paste Image", zh: "粘贴图片") }
+    static var pinLock: String { text(en: "Lock and click through", zh: "锁定并穿透鼠标") }
+    static var pinUnlockAll: String { text(en: "Unlock All Pins", zh: "解锁全部贴图") }
+    static var pinCloseAll: String { text(en: "Close All Pins", zh: "关闭全部贴图") }
+    static var overlayRestore: String { text(en: "Restore Last Overlay", zh: "恢复最近关闭浮层") }
+    static var overlayHide: String { text(en: "Hide Overlays", zh: "暂时隐藏浮层") }
+    static var overlayShow: String { text(en: "Show Overlays", zh: "显示浮层") }
+    static var overlayTitle: String { text(en: "Quick Access", zh: "截图快捷操作") }
 }

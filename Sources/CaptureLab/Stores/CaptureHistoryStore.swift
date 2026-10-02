@@ -32,10 +32,12 @@ final class CaptureHistoryStore: ObservableObject {
 
     @Published private(set) var items: [CaptureHistoryItem]
     @Published private(set) var loadError: CaptureHistoryError?
+    @Published private(set) var retention: CaptureHistoryRetention = .default
 
     private struct MetadataDocument: Codable, Equatable {
         var schemaVersion: Int
         var items: [CaptureHistoryItem]
+        var retention: CaptureHistoryRetention? = nil
     }
 
     private let environment: [String: String]
@@ -44,6 +46,7 @@ final class CaptureHistoryStore: ObservableObject {
     private let metadataWriter: MetadataWriter
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let now: () -> Date
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -53,88 +56,54 @@ final class CaptureHistoryStore: ObservableObject {
         },
         metadataWriter: @escaping MetadataWriter = { data, url in
             try data.write(to: url, options: .atomic)
-        }
+        },
+        now: @escaping () -> Date = Date.init
     ) {
         self.environment = environment
         self.fileManager = fileManager
         self.imageWriter = imageWriter
         self.metadataWriter = metadataWriter
+        self.now = now
+        self.items = []
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let historyEncoder = encoder
-        let historyDecoder = decoder
-        let historyDirectory = Self.historyDirectory(environment: environment)
-        let metadataURL = Self.metadataURL(environment: environment)
         do {
-            let result = try Self.withExclusiveHistoryLock(
-                historyDirectory: historyDirectory,
-                fileManager: fileManager
-            ) { () -> (items: [CaptureHistoryItem], error: CaptureHistoryError?) in
-                let metadataExists = fileManager.fileExists(atPath: metadataURL.path)
+            try withExclusiveHistoryLock {
+                let exists = fileManager.fileExists(atPath: metadataURL.path)
+                let loaded: [CaptureHistoryItem]
                 do {
-                    let loadedItems: [CaptureHistoryItem]
-                    if metadataExists {
-                        loadedItems = try Self.loadItems(
-                            metadataURL: metadataURL,
-                            fileManager: fileManager,
-                            decoder: historyDecoder
-                        )
+                    if exists {
+                        retention = try readRetention()
+                        loaded = try Self.loadItems(metadataURL: metadataURL, fileManager: fileManager, decoder: decoder)
                     } else {
-                        loadedItems = Self.recoverItemsFromDirectory(
-                            historyDirectory: historyDirectory,
-                            fileManager: fileManager
-                        )
+                        loaded = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
                     }
-                    if !metadataExists, !loadedItems.isEmpty {
-                        let document = MetadataDocument(schemaVersion: 1, items: loadedItems)
-                        try metadataWriter(historyEncoder.encode(document), metadataURL)
-                    }
-                    // A crash can leave a PNG behind after its atomic image write
-                    // but before metadata is committed. Likewise, a previous
-                    // best-effort overflow deletion may have failed. Once the
-                    // metadata snapshot is known to be valid (or has just been
-                    // rebuilt), it is the source of truth and those unreferenced
-                    // screenshots can be reclaimed safely while the cross-process
-                    // history lock is still held.
-                    Self.removeUnreferencedPNGFiles(
-                        retaining: loadedItems,
-                        historyDirectory: historyDirectory,
-                        fileManager: fileManager
-                    )
-                    return (loadedItems, nil)
                 } catch {
-                    let recoveredItems = Self.recoverItemsFromDirectory(
-                        historyDirectory: historyDirectory,
-                        fileManager: fileManager
-                    )
-                    let document = MetadataDocument(schemaVersion: 1, items: recoveredItems)
-                    if let data = try? historyEncoder.encode(document) {
-                        do {
-                            try metadataWriter(data, metadataURL)
-                            Self.removeUnreferencedPNGFiles(
-                                retaining: recoveredItems,
-                                historyDirectory: historyDirectory,
-                                fileManager: fileManager
-                            )
-                        } catch {
-                            // Preserve every recoverable PNG when the replacement
-                            // metadata could not be committed. A later launch can
-                            // retry without turning a metadata failure into data loss.
-                        }
-                    }
-                    return (
-                        recoveredItems,
-                        .metadataLoadFailed(error.localizedDescription)
-                    )
+                    items = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
+                    loadError = .metadataLoadFailed(error.localizedDescription)
+                    // Only reclaim files after recovery metadata is durable.
+                    do {
+                        try persist(items)
+                        Self.removeUnreferencedPNGFiles(retaining: items, historyDirectory: historyDirectory, fileManager: fileManager)
+                    } catch { /* Keep all recoverable images for the next retry. */ }
+                    return
                 }
+                items = loaded
+                let retained = retention.retaining(loaded, now: now())
+                if (!exists && !loaded.isEmpty) || retained != loaded {
+                    do { try persist(retained) }
+                    catch {
+                        synchronizeAfterMetadataFailure(fallback: loaded)
+                        throw error
+                    }
+                }
+                items = retained
+                Self.removeUnreferencedPNGFiles(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
             }
-            self.items = result.items
-            self.loadError = result.error
         } catch {
-            self.items = Self.recoverItemsFromDirectory(
-                historyDirectory: historyDirectory,
-                fileManager: fileManager
-            )
-            self.loadError = .metadataLoadFailed(error.localizedDescription)
+            if items.isEmpty {
+                items = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
+            }
+            loadError = .metadataLoadFailed(error.localizedDescription)
         }
     }
 
@@ -157,6 +126,7 @@ final class CaptureHistoryStore: ObservableObject {
             // snapshot while holding the cross-process lock instead of letting
             // stale in-memory state overwrite it.
             let currentItems = latestItemsFromDisk()
+            retention = try readRetention()
             let id = UUID()
             let fileName = "capture-\(Self.fileTimestampFormatter.string(from: createdAt))-\(id.uuidString).png"
             let fileURL = historyDirectory.appendingPathComponent(fileName)
@@ -170,7 +140,7 @@ final class CaptureHistoryStore: ObservableObject {
                 pixelHeight: Int(pixelSize.height)
             )
             let allItems = [item] + currentItems.filter { $0.id != item.id }
-            let retainedItems = Array(allItems.prefix(Self.maxItemCount))
+            let retainedItems = retention.retaining(allItems, now: now())
             do {
                 try persist(retainedItems)
             } catch {
@@ -224,10 +194,19 @@ final class CaptureHistoryStore: ObservableObject {
                         throw error
                     }
                 }
-                items = refreshedItems
+                retention = try readRetention()
+                let retained = retention.retaining(refreshedItems, now: now())
+                if retained != refreshedItems {
+                    do { try persist(retained) }
+                    catch {
+                        synchronizeAfterMetadataFailure(fallback: refreshedItems)
+                        throw error
+                    }
+                }
+                items = retained
                 loadError = nil
                 Self.removeUnreferencedPNGFiles(
-                    retaining: refreshedItems,
+                    retaining: retained,
                     historyDirectory: historyDirectory,
                     fileManager: fileManager
                 )
@@ -383,10 +362,58 @@ final class CaptureHistoryStore: ObservableObject {
         }
     }
 
-    private func persist(_ items: [CaptureHistoryItem]) throws {
+    private func readRetention() throws -> CaptureHistoryRetention {
+        guard fileManager.fileExists(atPath: metadataURL.path) else { return .default }
+        let document = try decoder.decode(MetadataDocument.self, from: Data(contentsOf: metadataURL))
+        return (document.retention ?? .default).validated
+    }
+
+    private func persist(_ items: [CaptureHistoryItem], policy: CaptureHistoryRetention? = nil) throws {
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
-        let document = MetadataDocument(schemaVersion: 1, items: items)
+        let effective = policy ?? ((try? readRetention()) ?? retention)
+        let document = MetadataDocument(schemaVersion: 2, items: items, retention: effective)
         try metadataWriter(encoder.encode(document), metadataURL)
+        retention = effective
+    }
+
+    struct RetentionPreview {
+        let policy: CaptureHistoryRetention
+        let removingIDs: Set<UUID>
+    }
+
+    func previewRetention(_ policy: CaptureHistoryRetention) throws -> RetentionPreview {
+        try withExclusiveHistoryLock {
+            let current = try readableItems()
+            let retainedIDs = Set(policy.retaining(current, now: now()).map(\.id))
+            return RetentionPreview(policy: policy.validated, removingIDs: Set(current.map(\.id)).subtracting(retainedIDs))
+        }
+    }
+
+    /// A new concurrent capture can change the set being deleted while the
+    /// confirmation is visible. Return a new preview instead of deleting it.
+    func applyRetention(_ preview: RetentionPreview) throws -> RetentionPreview? {
+        try withExclusiveHistoryLock {
+            let current = try readableItems()
+            let retained = preview.policy.retaining(current, now: now())
+            let removing = Set(current.map(\.id)).subtracting(retained.map(\.id))
+            guard removing.isSubset(of: preview.removingIDs) else {
+                return RetentionPreview(policy: preview.policy, removingIDs: removing)
+            }
+            do { try persist(retained, policy: preview.policy) }
+            catch {
+                synchronizeAfterMetadataFailure(fallback: current)
+                throw error
+            }
+            items = retained
+            loadError = nil
+            Self.removeUnreferencedPNGFiles(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
+            return nil
+        }
+    }
+
+    private func readableItems() throws -> [CaptureHistoryItem] {
+        guard fileManager.fileExists(atPath: metadataURL.path) else { return latestItemsFromDisk() }
+        return try Self.loadItems(metadataURL: metadataURL, fileManager: fileManager, decoder: decoder)
     }
 
     private func synchronizeAfterMetadataFailure(fallback: [CaptureHistoryItem]) {
@@ -404,6 +431,7 @@ final class CaptureHistoryStore: ObservableObject {
             return
         }
         items = committedItems
+        retention = (document.retention ?? .default).validated
         Self.removeUnreferencedPNGFiles(
             // Keep every raw metadata reference during error recovery, even
             // when loadItems filtered a missing file, duplicate, or overflow.
@@ -517,7 +545,6 @@ final class CaptureHistoryStore: ObservableObject {
             }
             return item
         }
-        .prefix(maxItemCount)
         .map { $0 }
     }
 

@@ -1,10 +1,11 @@
 import AppKit
+import Combine
 
 @MainActor
-final class CapturePinController: NSObject, NSWindowDelegate {
+final class CapturePinController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = CapturePinController()
 
-    private(set) var windows: [NSWindow] = []
+    @Published private(set) var windows: [NSWindow] = []
 
     func pin(image: NSImage, title: String) {
         let snapshot: NSImage
@@ -24,6 +25,14 @@ final class CapturePinController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    func unlockAll() {
+        for case let window as CapturePinWindow in windows { window.setLocked(false) }
+    }
+
+    func closeAll() {
+        for window in windows { window.close() }
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         windows.removeAll { $0 === window }
@@ -31,9 +40,10 @@ final class CapturePinController: NSObject, NSWindowDelegate {
 }
 
 @MainActor
-private final class CapturePinWindow: NSWindow {
+final class CapturePinWindow: NSWindow {
     private let opacityValueLabel = NSTextField(labelWithString: "100%")
     private let imageView = NSImageView()
+    private var lockButton: NSButton?
 
     init(image: NSImage, title: String) {
         let size = Self.initialContentSize(for: image.size)
@@ -85,7 +95,11 @@ private final class CapturePinWindow: NSWindow {
         closeButton.bezelStyle = .inline
         closeButton.toolTip = L10n.pinClose
 
-        let controls = NSStackView(views: [opacityLabel, slider, opacityValueLabel, closeButton])
+        let lockButton = NSButton(image: NSImage(systemSymbolName: "lock.open", accessibilityDescription: L10n.pinLock)!, target: self, action: #selector(lockPin))
+        lockButton.bezelStyle = .inline
+        lockButton.toolTip = L10n.pinLock
+        self.lockButton = lockButton
+        let controls = NSStackView(views: [opacityLabel, slider, opacityValueLabel, lockButton, closeButton])
         controls.orientation = .horizontal
         controls.spacing = 8
         controls.alignment = .centerY
@@ -111,12 +125,13 @@ private final class CapturePinWindow: NSWindow {
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
             close()
-        } else {
+        } else if !moveWithArrow(event) {
             super.keyDown(with: event)
         }
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if moveWithArrow(event) { return true }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "w" {
             close()
@@ -127,6 +142,31 @@ private final class CapturePinWindow: NSWindow {
 
     override func cancelOperation(_ sender: Any?) {
         close()
+    }
+
+    func setLocked(_ locked: Bool) {
+        ignoresMouseEvents = locked
+        isMovable = !locked
+        lockButton?.state = locked ? .on : .off
+        if locked { resignKey() }
+    }
+
+    @objc private func lockPin() { setLocked(true) }
+
+    private func moveWithArrow(_ event: NSEvent) -> Bool {
+        guard !ignoresMouseEvents,
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              [123, 124, 125, 126].contains(event.keyCode) else { return false }
+        let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+        var origin = frame.origin
+        switch event.keyCode {
+        case 123: origin.x -= step
+        case 124: origin.x += step
+        case 125: origin.y -= step
+        default: origin.y += step
+        }
+        setFrameOrigin(origin)
+        return true
     }
 
     @objc private func changeOpacity(_ sender: NSSlider) {
