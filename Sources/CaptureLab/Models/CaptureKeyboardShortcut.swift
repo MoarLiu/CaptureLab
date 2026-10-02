@@ -4,6 +4,7 @@ import SwiftUI
 struct CaptureKeyboardShortcut: Codable, Equatable {
     var key: String
     var modifiersRawValue: Int
+    var physicalKeyCode: UInt16?
 
     init(key: String, modifiers: EventModifiers) {
         self.key = key.lowercased()
@@ -29,6 +30,7 @@ struct CaptureKeyboardShortcut: Codable, Equatable {
               let scalar = key.unicodeScalars.first,
               !CharacterSet.controlCharacters.contains(scalar),
               carbonKeyCode != nil,
+              (physicalKeyCode.map { Self.isRecordableKeyCode($0) } ?? true),
               modifiers.isSubset(of: supportedModifiers)
         else {
             return false
@@ -64,11 +66,20 @@ struct CaptureKeyboardShortcut: Codable, Equatable {
         guard let key = normalizedKey(from: event) else {
             return nil
         }
-        let shortcut = CaptureKeyboardShortcut(
+        var shortcut = CaptureKeyboardShortcut(
             key: key,
             modifiers: eventModifiers(from: event.modifierFlags)
         )
+        shortcut.physicalKeyCode = event.keyCode
         return shortcut.isValid ? shortcut : nil
+    }
+
+    static func isRecordableKeyCode(_ code: UInt16) -> Bool {
+        (code <= 50 && ![36, 48, 49].contains(code)) || [93, 94, 95, 102].contains(code)
+    }
+
+    func conflicts(with other: Self) -> Bool {
+        carbonKeyCode == other.carbonKeyCode && carbonModifiers == other.carbonModifiers
     }
 
     private static func normalizedKey(from event: NSEvent) -> String? {

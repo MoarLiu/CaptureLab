@@ -43,11 +43,24 @@ struct CaptureLabApp: App {
         Window(L10n.shortcutSettingsTitle, id: "shortcut-settings") {
             ShortcutSettingsView(
                 shortcutStore: shortcutStore,
+                controller: globalHotKeyController,
                 onSave: registerGlobalHotKey
             )
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 420, height: 220)
+
+        Window(L10n.captureLauncher, id: "capture-launcher") {
+            CaptureLauncherView(model: model)
+        }.windowResizability(.contentSize)
+
+        Window(L10n.recognitionLanguages, id: "recognition-settings") {
+            RecognitionSettingsView()
+        }.windowResizability(.contentSize)
+
+        Window(L10n.text(en: "Recognition Results", zh: "识别结果"), id: "recognition-results") {
+            DirectRecognitionView(controller: model.directRecognition)
+        }.defaultSize(width: 560, height: 400)
 
         Window(L10n.cloudflareR2SettingsTitle, id: "cloudflare-r2-settings") {
             CloudflareR2SettingsView(store: r2SettingsStore)
@@ -91,9 +104,17 @@ struct CaptureLabApp: App {
 
     private func configureGlobalHotKey() {
         model.presentEditor = showMainWindow
-        _ = globalHotKeyController.configure(shortcut: shortcutStore.captureShortcut) {
-            model.capture(.region, onSuccess: showMainWindow)
+        model.presentRecognition = { showUtilityWindow("recognition-results") }
+        model.presentCaptureLauncher = { showUtilityWindow("capture-launcher") }
+        for action in CaptureAction.allCases {
+            _ = registerGlobalHotKey(action, shortcutStore.shortcut(for: action))
         }
+    }
+
+    private func showUtilityWindow(_ id: String) {
+        NSApp.setActivationPolicy(.regular)
+        openWindow(id: id)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func showHistory() {
@@ -103,14 +124,12 @@ struct CaptureLabApp: App {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func registerGlobalHotKey(_ shortcut: CaptureKeyboardShortcut) -> String? {
-        let didRegister = globalHotKeyController.configure(shortcut: shortcut) {
-            model.capture(.region, onSuccess: showMainWindow)
+    private func registerGlobalHotKey(_ action: CaptureAction, _ shortcut: CaptureKeyboardShortcut?) -> String? {
+        let didRegister = globalHotKeyController.configure(action: action, shortcut: shortcut) {
+            model.performCaptureAction(action)
         }
-        return didRegister
-            ? nil
-            : globalHotKeyController.registrationError
-                ?? L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
+        return didRegister ? nil : globalHotKeyController.actionErrors[action]
+            ?? L10n.globalShortcutRegistrationFailed(shortcut?.displayTitle ?? action.title)
     }
 
     private func showWorkflowSettings() {

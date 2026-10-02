@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.7.0 - 2026-10-02
+
+- Added precise region capture with the last successful region, fixed size and
+  ratio presets, keyboard nudging, crosshair guides, magnifier, pixel-size
+  feedback, and frozen-screen selection.
+- Added a unified capture launcher and independent global shortcuts for region,
+  full-screen, window, delayed, last-region, launcher, direct text, and QR-code
+  actions. Conflicts and registration failures remain visible per action.
+- Added direct text selection and copy without opening the editor, multi-result
+  QR recognition, cancellation, task replacement isolation, and clipboard
+  preservation when recognition returns no result.
+- Added Vision language settings generated from the languages supported by the
+  current macOS installation.
+
+- Fixed custom aspect-ratio locking during width and height edits, preserved
+  selected ratios at desktop boundaries, and removed the editor's duplicate
+  character-based region shortcut binding.
+
+- Fixed Retina output resolution by reading display-mode backing pixels and
+  rejecting captured frames whose dimensions disagree with the display mode.
+
+Validation: 268 tests pass with strict concurrency and warnings as errors.
+Both ARM64 and Intel macOS 13 release packages pass local artifact verification.
+
+Artifacts:
+
+- `CaptureLab-0.7.0-macos-arm64.dmg`
+- SHA-256: `88be47bf5aec35115586c2fce4c648878ff9b5963c26aafd5b4cde30e45366a0`
+- `CaptureLab-0.7.0-macos-arm64.dmg.sha256`
+- `CaptureLab-0.7.0-macos-arm64.dmg.sig`
+- `CaptureLab-0.7.0-macos-x86_64.dmg`
+- SHA-256: `9d00578cbdb67fe76a25c5e3c153f5ddbc465ec8ffbfabf22beaed2ddd32024d`
+- `CaptureLab-0.7.0-macos-x86_64.dmg.sha256`
+- `CaptureLab-0.7.0-macos-x86_64.dmg.sig`
+
+Known release notes:
+
+- Requires macOS 13 or later. Choose arm64 for Apple Silicon or x86_64 for Intel.
+- Uses the existing local self-signed certificate and is not notarized; macOS
+  may require manual approval on first launch.
+- Real screen-recording permission flows, mixed-scale multiple displays,
+  full-screen Spaces, non-US keyboards, and real mixed-language/QR recognition
+  still need manual acceptance. Intel hardware and macOS 13 hardware were not
+  available for runtime testing.
+- Shortcut recording retains limitations for combinations already handled by
+  application menus or registered global shortcuts.
+
 ## 0.6.0 - 2026-10-02
 
 - Added configurable post-capture actions: editor, quick-access overlay, and copy only.

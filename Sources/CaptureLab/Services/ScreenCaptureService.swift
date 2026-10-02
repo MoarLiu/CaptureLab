@@ -49,6 +49,9 @@ struct ScreenCaptureService {
     }
 
     func captureFile(mode: CaptureMode) throws -> URL {
+        if mode == .lastRegion || mode == .frozenRegion {
+            throw CaptureLabError.captureFailed("This mode requires the region selector.")
+        }
         let url = try temporaryCaptureURL()
         do {
             try runScreencapture(
@@ -69,6 +72,7 @@ struct ScreenCaptureService {
 
     func arguments(for mode: CaptureMode, outputURL url: URL) -> [String] {
         switch mode {
+        case .lastRegion, .frozenRegion: return []
         case .region:
             return ["-i", "-x", url.path]
         case .fullScreen:
@@ -173,9 +177,9 @@ struct ScreenCaptureService {
 private extension CaptureMode {
     var isInteractive: Bool {
         switch self {
-        case .region, .window, .delayedRegion:
+        case .region, .window, .delayedRegion, .frozenRegion:
             return true
-        case .fullScreen:
+        case .fullScreen, .lastRegion:
             return false
         }
     }

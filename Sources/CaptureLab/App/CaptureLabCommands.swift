@@ -31,10 +31,6 @@ struct CaptureLabCommands: Commands {
             Button(L10n.captureRegion) {
                 model.capture(.region, onSuccess: showMainWindow)
             }
-            .keyboardShortcut(
-                shortcutStore.captureShortcut.keyEquivalent,
-                modifiers: shortcutStore.captureShortcut.modifiers
-            )
             .disabled(model.isCapturing)
 
             Button(L10n.captureFullScreen) {
@@ -130,6 +126,8 @@ struct CaptureLabCommands: Commands {
         }
 
         CommandMenu(L10n.captureMenu) {
+            PrecisionCaptureMenu(model: model)
+            Divider()
             Button(L10n.captureRegion) {
                 model.capture(.region, onSuccess: showMainWindow)
             }
@@ -226,6 +224,8 @@ struct CaptureLabMenuBarView: View {
     var showWorkflowSettings: () -> Void = {}
 
     var body: some View {
+        PrecisionCaptureMenu(model: model)
+        Divider()
         Button(L10n.workflowSettings, action: showWorkflowSettings)
         CaptureOverlayMenu(controller: model.overlayController)
         CapturePinMenu()

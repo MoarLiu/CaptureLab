@@ -12,11 +12,17 @@ final class GlobalHotKeyController: ObservableObject {
     typealias UnregisterOperation = (EventHotKeyRef) -> OSStatus
 
     @Published private(set) var registrationError: String?
-    private(set) var registeredShortcut: CaptureKeyboardShortcut?
-
-    private var hotKeyRef: EventHotKeyRef?
+    @Published private(set) var actionErrors: [CaptureAction: String] = [:]
+    var registeredShortcut: CaptureKeyboardShortcut? { registrations[.region]?.shortcut }
+    func registeredShortcut(for action: CaptureAction) -> CaptureKeyboardShortcut? { registrations[action]?.shortcut }
+    private struct Registration {
+        let reference: EventHotKeyRef
+        let shortcut: CaptureKeyboardShortcut
+        let id: UInt32
+        var perform: () -> Void
+    }
+    private var registrations: [CaptureAction: Registration] = [:]
     private var eventHandlerRef: EventHandlerRef?
-    private var action: (() -> Void)?
     private var nextHotKeyID: UInt32 = 1
     private let registerOperation: RegisterOperation
     private let unregisterOperation: UnregisterOperation
@@ -43,75 +49,79 @@ final class GlobalHotKeyController: ObservableObject {
 
     @discardableResult
     func configure(shortcut: CaptureKeyboardShortcut, action: @escaping () -> Void) -> Bool {
-        if shortcut == registeredShortcut, hotKeyRef != nil {
-            self.action = action
-            registrationError = nil
+        configure(action: .region, shortcut: shortcut, perform: action)
+    }
+
+    @discardableResult
+    func configure(action: CaptureAction, shortcut: CaptureKeyboardShortcut?, perform: @escaping () -> Void) -> Bool {
+        func fail(_ message: String) -> Bool {
+            actionErrors[action] = message
+            registrationError = message
+            return false
+        }
+        guard let shortcut else {
+            if let old = registrations[action] {
+                let status = unregisterOperation(old.reference)
+                guard status == noErr else { return fail("OSStatus: \(status)") }
+                registrations[action] = nil
+            }
+            actionErrors[action] = nil
+            registrationError = actionErrors.values.sorted().first
             return true
         }
-
-        guard shortcut.isValid, let keyCode = shortcut.carbonKeyCode else {
-            registrationError = L10n.globalShortcutUnsupported(shortcut.displayTitle)
-            return false
+        if let old = registrations[action], shortcut == old.shortcut {
+            registrations[action]?.perform = perform
+            actionErrors[action] = nil
+            registrationError = actionErrors.values.sorted().first
+            return true
         }
-
+        guard shortcut.isValid, let keyCode = shortcut.carbonKeyCode else {
+            return fail(L10n.globalShortcutUnsupported(shortcut.displayTitle))
+        }
+        if let conflict = registrations.first(where: { $0.key != action && $0.value.shortcut.conflicts(with: shortcut) }) {
+            return fail(L10n.text(en: "Already assigned to \(conflict.key.title).", zh: "已用于“\(conflict.key.title)”。"))
+        }
+        // A layout can change the label while the physical binding stays identical.
+        if let old = registrations[action], old.shortcut.conflicts(with: shortcut) {
+            registrations[action] = Registration(reference: old.reference, shortcut: shortcut, id: old.id, perform: perform)
+            actionErrors[action] = nil
+            registrationError = actionErrors.values.sorted().first
+            return true
+        }
         let handlerStatus = installEventHandlerIfNeeded()
         guard handlerStatus == noErr else {
-            registrationError = L10n.globalShortcutHandlerInstallFailed
-            return false
+            return fail(L10n.globalShortcutHandlerInstallFailed + " (OSStatus: \(handlerStatus))")
         }
-
-        let hotKeyID = EventHotKeyID(
-            signature: GlobalHotKeyController.hotKeySignature,
-            id: nextHotKeyID
-        )
-        var newHotKeyRef: EventHotKeyRef?
-        let status = registerOperation(
-            keyCode,
-            shortcut.carbonModifiers,
-            hotKeyID,
-            &newHotKeyRef
-        )
-
-        guard status == noErr, let newHotKeyRef else {
-            if let newHotKeyRef {
-                _ = unregisterOperation(newHotKeyRef)
-            }
-            registrationError = L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
-            return false
-        }
-
-        // Keep the old hot key alive until the replacement is known to be
-        // registered. A conflicting/unsupported replacement therefore cannot
-        // leave the app without its previous working shortcut.
-        if let oldHotKeyRef = hotKeyRef {
-            guard unregisterOperation(oldHotKeyRef) == noErr else {
-                _ = unregisterOperation(newHotKeyRef)
-                registrationError = L10n.globalShortcutRegistrationFailed(shortcut.displayTitle)
-                return false
-            }
-        }
-        hotKeyRef = newHotKeyRef
-        registeredShortcut = shortcut
-        self.action = action
+        let id = nextHotKeyID
         nextHotKeyID &+= 1
-        registrationError = nil
+        let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: id)
+        var newRef: EventHotKeyRef?
+        let status = registerOperation(keyCode, shortcut.carbonModifiers, hotKeyID, &newRef)
+        guard status == noErr, let newRef else {
+            if let newRef { _ = unregisterOperation(newRef) }
+            return fail(L10n.globalShortcutRegistrationFailed(shortcut.displayTitle) + " (OSStatus: \(status))")
+        }
+        if let old = registrations[action] {
+            let oldStatus = unregisterOperation(old.reference)
+            guard oldStatus == noErr else {
+                _ = unregisterOperation(newRef)
+                return fail(L10n.globalShortcutRegistrationFailed(shortcut.displayTitle) + " (OSStatus: \(oldStatus))")
+            }
+        }
+        registrations[action] = Registration(reference: newRef, shortcut: shortcut, id: id, perform: perform)
+        actionErrors[action] = nil
+        registrationError = actionErrors.values.sorted().first
         return true
     }
 
-    private func unregister() {
-        unregisterHotKey()
-        if let eventHandlerRef {
-            RemoveEventHandler(eventHandlerRef)
-            self.eventHandlerRef = nil
-        }
+    func shutdown() {
+        for registration in registrations.values { _ = unregisterOperation(registration.reference) }
+        registrations.removeAll()
+        if let eventHandlerRef { RemoveEventHandler(eventHandlerRef); self.eventHandlerRef = nil }
     }
 
-    private func unregisterHotKey() {
-        if let hotKeyRef {
-            _ = unregisterOperation(hotKeyRef)
-            self.hotKeyRef = nil
-            registeredShortcut = nil
-        }
+    func handleHotKey(id: UInt32) {
+        registrations.values.first { $0.id == id }?.perform()
     }
 
     private func installEventHandlerIfNeeded() -> OSStatus {
@@ -136,10 +146,6 @@ final class GlobalHotKeyController: ObservableObject {
             userData,
             &eventHandlerRef
         )
-    }
-
-    private func handleHotKey() {
-        action?()
     }
 
     private static let hotKeySignature: OSType = 0x434C484B // CLHK
@@ -172,7 +178,7 @@ final class GlobalHotKeyController: ObservableObject {
             .fromOpaque(userData)
             .takeUnretainedValue()
         Task { @MainActor in
-            controller.handleHotKey()
+            controller.handleHotKey(id: hotKeyID.id)
         }
         return noErr
     }
@@ -180,7 +186,7 @@ final class GlobalHotKeyController: ObservableObject {
 
 extension CaptureKeyboardShortcut {
     var carbonKeyCode: UInt32? {
-        Self.carbonKeyCodes[key].map(UInt32.init)
+        physicalKeyCode.map(UInt32.init) ?? Self.carbonKeyCodes[key].map(UInt32.init)
     }
 
     var carbonModifiers: UInt32 {

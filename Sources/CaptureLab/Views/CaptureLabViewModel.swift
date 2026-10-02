@@ -112,6 +112,18 @@ final class CaptureLabViewModel: ObservableObject {
     private var importRequestID = UUID()
     private var pendingSaveSnapshot: (id: UUID, annotations: [CaptureAnnotation], data: Data)?
     var presentEditor: (() -> Void)?
+    var presentRecognition: (() -> Void)?
+    var presentCaptureLauncher: (() -> Void)?
+    lazy var directRecognition = DirectRecognitionController(pasteboard: pasteboard, text: textRecognitionOperation)
+
+    func performCaptureAction(_ action: CaptureAction) {
+        switch action {
+        case .launcher: presentCaptureLauncher?()
+        case .text: capture(.region, recognition: .text)
+        case .qrCode: capture(.region, recognition: .qrCode)
+        default: if let mode = action.mode { capture(mode) }
+        }
+    }
     private let pasteboard: NSPasteboard
     private let windowVisibilityCoordinator: any CaptureWindowVisibilityCoordinating
     private let captureOperation: CaptureOperation
@@ -358,8 +370,10 @@ final class CaptureLabViewModel: ObservableObject {
         capture(.region)
     }
 
-    func capture(_ mode: CaptureMode, onSuccess: (() -> Void)? = nil) {
+    func capture(_ mode: CaptureMode, recognition: DirectRecognitionController.Kind? = nil, onSuccess: (() -> Void)? = nil) {
         guard !isCapturing else { return }
+        directRecognition.cancel()
+        if recognition != nil { cancelTextRecognition(); cancelUpload() }
         isCapturing = true
         statusMessage = mode.promptTitle
 
@@ -392,7 +406,14 @@ final class CaptureLabViewModel: ObservableObject {
             self.overlayController.isCapturing = false
             switch result {
             case .success(let url):
-                self.receiveCapture(url: url, mode: mode, showEditor: onSuccess ?? self.presentEditor)
+                if let recognition {
+                    if let image = NSImage(contentsOf: url)?.captureLabCGImage() {
+                        self.directRecognition.start(image: image, kind: recognition)
+                        self.presentRecognition?()
+                    } else { self.reportFailure(L10n.imageLoadFailed, title: L10n.ocrFailedTitle) }
+                } else {
+                    self.receiveCapture(url: url, mode: mode, showEditor: onSuccess ?? self.presentEditor)
+                }
             case .failure(let error):
                 if error is CancellationError {
                     self.statusMessage = L10n.captureCancelled
@@ -824,6 +845,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func recognizeText() {
+        directRecognition.cancel()
         guard let image = document?.image.captureLabCGImage() else {
             reportFailure(CaptureLabError.ocrImageUnavailable.localizedDescription, title: L10n.ocrFailedTitle)
             return
@@ -1085,15 +1107,12 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     static func defaultCaptureOperation(_ mode: CaptureMode) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
-            try ScreenCaptureService().captureFile(mode: mode)
-        }.value
+        try await PreciseScreenCapture.shared.capture(mode)
     }
 
     static func defaultTextRecognitionOperation(_ image: CGImage) async throws -> OCRResult {
-        try await Task.detached(priority: .userInitiated) {
-            try TextRecognitionService().recognizeText(in: image)
-        }.value
+        let languages = UserDefaults.standard.stringArray(forKey: RecognitionSettings.key) ?? []
+        return try await TextRecognitionService().recognizeTextAsync(in: image, languages: languages)
     }
 
     static func defaultUploadOperation(_ request: CloudflareR2UploadRequest) async throws -> CloudflareR2UploadResult {
@@ -1139,7 +1158,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.6.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.7.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

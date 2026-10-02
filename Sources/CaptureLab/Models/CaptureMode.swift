@@ -2,12 +2,16 @@ import Foundation
 
 enum CaptureMode: Hashable, Identifiable {
     case region
+    case lastRegion
+    case frozenRegion
     case fullScreen
     case window
     case delayedRegion(seconds: Int)
 
     var id: String {
         switch self {
+        case .lastRegion: return "lastRegion"
+        case .frozenRegion: return "frozenRegion"
         case .region:
             return "region"
         case .fullScreen:
@@ -21,6 +25,8 @@ enum CaptureMode: Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .lastRegion: return L10n.lastRegion
+        case .frozenRegion: return L10n.frozenRegion
         case .region:
             return L10n.captureRegion
         case .fullScreen:
@@ -34,6 +40,8 @@ enum CaptureMode: Hashable, Identifiable {
 
     var promptTitle: String {
         switch self {
+        case .lastRegion: return L10n.lastRegion
+        case .frozenRegion: return L10n.frozenRegion
         case .region:
             return L10n.selectRegionPrompt
         case .fullScreen:
@@ -47,6 +55,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var completedTitle: String {
         switch self {
+        case .lastRegion, .frozenRegion: return L10n.capturedRegion
         case .region:
             return L10n.capturedRegion
         case .fullScreen:
@@ -60,6 +69,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var completedAndCopiedTitle: String {
         switch self {
+        case .lastRegion, .frozenRegion: return L10n.capturedRegionAndCopied
         case .region:
             return L10n.capturedRegionAndCopied
         case .fullScreen:

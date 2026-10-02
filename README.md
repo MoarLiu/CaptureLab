@@ -4,8 +4,10 @@ CaptureLab is a small native macOS screenshot and annotation lab app.
 
 Current features:
 
-- global screenshot shortcut from the menu bar app
-- region, full screen, window, and delayed region capture modes
+- per-action global shortcuts with conflict reporting and physical key recording
+- region, full screen, window, delayed, last-region, and frozen-screen capture modes
+- unified capture launcher; precise region size, aspect ratio, keyboard adjustment,
+  guides, magnifier, and logical-point/output-pixel dimensions
 - configurable history retention (30, 100, or 300 captures and optional 1/7/30-day limits)
 - full thumbnail browser for all retained captures, with refresh, open, copy,
   save as, Cloudflare R2 upload, pin, and confirmed deletion actions
@@ -20,6 +22,8 @@ Current features:
 - copy/save rendered PNG output
 - optional Cloudflare R2 upload for rendered screenshots
 - optional local Vision OCR tool with editable OCR text and copy support
+- direct text selection and copy, multiple QR-code results, and recognition
+  languages selected from those supported by the current macOS version
 
 Cropping merges the current annotations into the cropped pixels, including
 mosaic redactions. Undo restores the original image and editable annotations;

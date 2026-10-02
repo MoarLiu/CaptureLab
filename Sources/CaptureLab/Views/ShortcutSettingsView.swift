@@ -3,109 +3,67 @@ import SwiftUI
 
 struct ShortcutSettingsView: View {
     @ObservedObject var shortcutStore: CaptureShortcutStore
-    let onSave: (CaptureKeyboardShortcut) -> String?
-    @Environment(\.dismiss) private var dismiss
-    @State private var draftShortcut: CaptureKeyboardShortcut
+    @ObservedObject var controller: GlobalHotKeyController
+    let onSave: (CaptureAction, CaptureKeyboardShortcut?) -> String?
+    @State private var selectedAction = CaptureAction.region
+    @State private var draftShortcut = CaptureKeyboardShortcut.defaultCapture
+    @State private var enabled = true
     @State private var saveError: String?
+    @State private var saved = false
     @State private var window: NSWindow?
 
-    init(
-        shortcutStore: CaptureShortcutStore,
-        onSave: @escaping (CaptureKeyboardShortcut) -> String? = { _ in nil }
-    ) {
-        self.shortcutStore = shortcutStore
-        self.onSave = onSave
-        _draftShortcut = State(initialValue: shortcutStore.captureShortcut)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L10n.shortcutSettingsTitle)
-                        .font(.system(size: 17, weight: .semibold))
-                    Text(L10n.shortcutSettingsSubtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10n.shortcutSettingsTitle).font(.title2)
+            Picker(L10n.text(en: "Action", zh: "操作"), selection: $selectedAction) {
+                ForEach(CaptureAction.allCases) { action in
+                    Text(action.title + "  " + (shortcutStore.shortcut(for: action)?.displayTitle ?? "—")).tag(action)
                 }
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n.screenshotShortcut)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                ShortcutRecorderView(
-                    shortcut: $draftShortcut,
-                    cancelAction: close
-                )
-                .frame(height: 48)
-
-                Text(L10n.shortcutHelp)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-
-                if let saveError {
-                    Text(saveError)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            if selectedAction != .region {
+                Toggle(L10n.text(en: "Enable global shortcut", zh: "启用全局快捷键"), isOn: $enabled)
             }
-
+            if enabled {
+                ShortcutRecorderView(shortcut: $draftShortcut, cancelAction: { window?.close() }).frame(height: 48)
+                Text(L10n.text(en: "Press a key with Command, Control or Option. Physical key positions are preserved, including Shift and non-US keyboards.",
+                    zh: "按下包含 Command、Control 或 Option 的组合键。按实体键位保存，支持 Shift 组合和非美式键盘。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let message = saveError ?? controller.actionErrors[selectedAction] {
+                Text(message).foregroundStyle(.red).font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
+                if saved { Text(L10n.text(en: "Saved", zh: "已保存")).foregroundStyle(.secondary) }
                 Spacer()
-
-                Button(L10n.cancel) {
-                    close()
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Button(L10n.save) {
-                    let didSave = shortcutStore.saveCaptureShortcut(
-                        draftShortcut,
-                        afterRegistering: {
-                            if let error = onSave(draftShortcut) {
-                                saveError = error
-                                return false
-                            }
-                            return true
-                        }
-                    )
-                    guard didSave else {
-                        if saveError != nil {
-                            return
-                        }
-                        saveError = L10n.globalShortcutUnsupported(draftShortcut.displayTitle)
-                        return
-                    }
-                    saveError = nil
-                    close()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!draftShortcut.isValid)
+                Button(L10n.cancel) { window?.close() }
+                Button(L10n.save, action: save).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(22)
-        .frame(width: 420)
+        .padding(22).frame(width: 500)
         .background(ShortcutSettingsWindowReader(window: $window))
-        .onAppear {
-            draftShortcut = shortcutStore.captureShortcut
-            saveError = nil
-        }
+        .onAppear(perform: load)
+        .onChange(of: selectedAction) { _ in load() }
+        .onChange(of: draftShortcut) { _ in saved = false; saveError = nil }
+        .onChange(of: enabled) { _ in saved = false; saveError = nil }
         .captureLabWindowCloseShortcuts()
     }
-
-    private func close() {
-        if let window {
-            window.close()
-        } else {
-            dismiss()
+    private func load() {
+        let value = shortcutStore.shortcut(for: selectedAction)
+        enabled = value != nil
+        draftShortcut = value ?? .defaultCapture
+        saveError = nil; saved = false
+    }
+    private func save() {
+        let value = enabled ? draftShortcut : nil
+        if let value, let conflict = shortcutStore.conflict(for: value, action: selectedAction) {
+            saveError = L10n.text(en: "Already assigned to \(conflict.title).", zh: "已用于“\(conflict.title)”。")
+            return
         }
+        saved = shortcutStore.save(value, for: selectedAction) {
+            saveError = onSave(selectedAction, value)
+            return saveError == nil
+        }
+        if !saved && saveError == nil { saveError = L10n.globalShortcutUnsupported(draftShortcut.displayTitle) }
     }
 }
 
@@ -176,9 +134,6 @@ private struct ShortcutRecorderBridge: NSViewRepresentable {
             self.shortcut = shortcut
         }
         nsView.onCancel = cancelAction
-        DispatchQueue.main.async {
-            nsView.window?.makeFirstResponder(nsView)
-        }
     }
 
     final class RecorderView: NSView {

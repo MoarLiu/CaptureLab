@@ -163,10 +163,6 @@ private struct EditorTopBarView: View {
                     model.captureRegion()
                 }
                 .disabled(model.isCapturing)
-                .keyboardShortcut(
-                    shortcutStore.captureShortcut.keyEquivalent,
-                    modifiers: shortcutStore.captureShortcut.modifiers
-                )
 
                 ToolbarIconButton(systemImage: "photo.badge.plus", help: L10n.openImage, isPrimary: false) {
                     model.openImage()
