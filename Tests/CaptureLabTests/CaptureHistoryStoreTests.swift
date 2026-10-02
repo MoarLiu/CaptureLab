@@ -126,6 +126,89 @@ final class CaptureHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try pngURLs(in: store.historyDirectory).count, 1)
     }
 
+    func testReadingStaleItemResolvesLatestCropAndReturnsMatchingMetadata() throws {
+        let fixture = try HistoryFixture()
+        let reader = CaptureHistoryStore(environment: fixture.environment)
+        let original = try reader.record(data: Data([1]), pixelSize: CGSize(width: 100, height: 80))
+        let writer = CaptureHistoryStore(environment: fixture.environment)
+        let cropped = try XCTUnwrap(writer.updateImage(data: Data([2, 3]), for: original,
+            pixelSize: CGSize(width: 40, height: 30)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: reader.url(for: original).path))
+
+        let snapshot = try reader.imageSnapshot(for: original)
+
+        XCTAssertEqual(snapshot.item, cropped)
+        XCTAssertEqual(snapshot.data, Data([2, 3]))
+        XCTAssertEqual(reader.items, [cropped])
+        XCTAssertEqual(try reader.data(for: original), snapshot.data)
+    }
+
+    func testReadingDeletedItemRejectsOrphanLeftByFailedCleanup() throws {
+        let fixture = try HistoryFixture()
+        let reader = CaptureHistoryStore(environment: fixture.environment)
+        let original = try reader.record(data: Data([1]), pixelSize: CGSize(width: 10, height: 10))
+        let fileManager = FailingPNGRemovalFileManager()
+        let writer = CaptureHistoryStore(environment: fixture.environment, fileManager: fileManager)
+        fileManager.rejectPNGRemoval = true
+        XCTAssertThrowsError(try writer.remove(original))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: reader.url(for: original).path))
+
+        XCTAssertThrowsError(try reader.data(for: original)) { error in
+            guard case CaptureHistoryError.imageNotFound = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertTrue(reader.items.isEmpty)
+    }
+
+    func testImageSnapshotWaitsForCrossProcessCropCommit() throws {
+        let fixture = try HistoryFixture()
+        let store = CaptureHistoryStore(environment: fixture.environment)
+        let original = try store.record(data: Data([1]), pixelSize: CGSize(width: 100, height: 80))
+        var cropped = original
+        cropped.fileName = "cropped-\(original.id.uuidString).png"
+        cropped.pixelWidth = 40
+        cropped.pixelHeight = 30
+        let stagedMetadata = fixture.home.appendingPathComponent("next-history.json")
+        try writeMetadata([cropped], to: stagedMetadata)
+        let nextImage = store.url(for: cropped)
+        let stagedImage = fixture.home.appendingPathComponent("next.png")
+        try Data([2, 3]).write(to: stagedImage)
+        let ready = fixture.home.appendingPathComponent("crop-writer-ready")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
+        process.arguments = [
+            "-k", store.historyDirectory.appendingPathComponent(".history.lock").path,
+            "/bin/sh", "-c",
+            """
+            touch "$1" || exit 1
+            sleep 0.5
+            mv "$2" "$3" || exit 2
+            mv "$4" "$5" || exit 3
+            rm "$6" || exit 4
+            """,
+            "crop-writer", ready.path, stagedImage.path, nextImage.path,
+            stagedMetadata.path, store.metadataURL.path, store.url(for: original).path
+        ]
+        try process.run()
+        defer {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+        let deadline = Date().addingTimeInterval(2)
+        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ready.path))
+
+        let snapshot = try store.imageSnapshot(for: original)
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(snapshot.item, cropped)
+        XCTAssertEqual(snapshot.data, Data([2, 3]), "The read must wait for the committed image revision.")
+    }
+
     func testCropSynchronizesCommitWhenMetadataWriterReportsFailureAfterCommit() throws {
         enum FixtureError: Error { case reportedAfterCommit }
         let fixture = try HistoryFixture()

@@ -302,9 +302,9 @@ final class CaptureLabViewModel: ObservableObject {
 
     func pinHistoryItem(_ item: CaptureHistoryItem) {
         do {
-            let data = try historyStore.data(for: item)
-            guard let image = NSImage(data: data), image.isValid else { throw CaptureLabError.imageLoadFailed }
-            pinOperation(image, item.displayTitle)
+            let snapshot = try historyImageSnapshot(for: item)
+            guard let image = NSImage(data: snapshot.data), image.isValid else { throw CaptureLabError.imageLoadFailed }
+            pinOperation(image, snapshot.item.displayTitle)
         } catch {
             reportFailure(error.localizedDescription, title: L10n.pinFailedTitle)
         }
@@ -488,27 +488,26 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func openHistoryItem(_ item: CaptureHistoryItem) {
-        let url = historyStore.url(for: item)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            reportFailure(CaptureHistoryError.imageNotFound.localizedDescription, title: L10n.imageOpenFailedTitle)
-            return
-        }
-        if loadImage(from: url, sourceURL: url, status: L10n.historyCaptureOpened) {
-            currentHistoryItem = item
+        do {
+            let snapshot = try historyImageSnapshot(for: item)
+            if loadImage(data: snapshot.data, sourceURL: historyStore.url(for: snapshot.item), status: L10n.historyCaptureOpened) {
+                currentHistoryItem = snapshot.item
+            }
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
         }
     }
 
     func copyHistoryItem(_ item: CaptureHistoryItem) {
-        let url = historyStore.url(for: item)
-        guard let data = try? Data(contentsOf: url),
-              let image = NSImage(data: data),
-              image.isValid
-        else {
-            reportFailure(CaptureHistoryError.imageNotFound.localizedDescription, title: L10n.imageCopyFailedTitle)
-            return
+        do {
+            let snapshot = try historyImageSnapshot(for: item)
+            guard let image = NSImage(data: snapshot.data), image.isValid else {
+                throw CaptureLabError.imageLoadFailed
+            }
+            _ = copyRenderedImage(image, successStatus: L10n.imageCopied)
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.imageCopyFailedTitle)
         }
-
-        _ = copyRenderedImage(image, successStatus: L10n.imageCopied)
     }
 
     @discardableResult
@@ -561,9 +560,9 @@ final class CaptureLabViewModel: ObservableObject {
 
     func saveHistoryItem(_ item: CaptureHistoryItem) {
         do {
-            let data = try historyStore.data(for: item)
-            guard let url = saveDestinationOperation(item.fileName) else { return }
-            try data.write(to: url, options: .atomic)
+            let snapshot = try historyImageSnapshot(for: item)
+            guard let url = saveDestinationOperation(snapshot.item.fileName) else { return }
+            try snapshot.data.write(to: url, options: .atomic)
             statusMessage = L10n.saved(url.lastPathComponent)
         } catch {
             reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle)
@@ -572,11 +571,16 @@ final class CaptureLabViewModel: ObservableObject {
 
     func uploadHistoryItem(_ item: CaptureHistoryItem, onSuccess: ((String) -> Void)? = nil) {
         do {
-            let data = try historyStore.data(for: item)
-            uploadPNGData(data, fileName: item.fileName, onSuccess: onSuccess)
+            let snapshot = try historyImageSnapshot(for: item)
+            uploadPNGData(snapshot.data, fileName: snapshot.item.fileName, onSuccess: onSuccess)
         } catch {
             presentUploadFailure(error)
         }
+    }
+
+    private func historyImageSnapshot(for item: CaptureHistoryItem) throws -> CaptureHistoryStore.ImageSnapshot {
+        defer { historyItems = historyStore.items }
+        return try historyStore.imageSnapshot(for: item)
     }
 
     private func uploadPNGData(_ data: Data, fileName: String, onSuccess: ((String) -> Void)? = nil) {
@@ -786,10 +790,16 @@ final class CaptureLabViewModel: ObservableObject {
 
     @discardableResult
     private func loadImage(from url: URL, sourceURL: URL?, status: String) -> Bool {
-        guard let data = try? Data(contentsOf: url),
-              let image = NSImage(data: data),
-              image.isValid
-        else {
+        guard let data = try? Data(contentsOf: url) else {
+            reportFailure(CaptureLabError.imageLoadFailed.localizedDescription, title: L10n.imageOpenFailedTitle)
+            return false
+        }
+        return loadImage(data: data, sourceURL: sourceURL, status: status)
+    }
+
+    @discardableResult
+    private func loadImage(data: Data, sourceURL: URL?, status: String) -> Bool {
+        guard let image = NSImage(data: data), image.isValid else {
             reportFailure(CaptureLabError.imageLoadFailed.localizedDescription, title: L10n.imageOpenFailedTitle)
             return false
         }
@@ -944,7 +954,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.5.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.5.1"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

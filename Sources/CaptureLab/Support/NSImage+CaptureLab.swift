@@ -230,7 +230,7 @@ extension NSImage {
         style.color.setFill()
         NSBezierPath(ovalIn: circleRect).fill()
 
-        let fontSize = style.counterFontSize(for: diameter)
+        let fontSize = style.counterFontSize(for: diameter, text: value)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [

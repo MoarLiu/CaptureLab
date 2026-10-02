@@ -25,6 +25,11 @@ final class CaptureHistoryStore: ObservableObject {
     typealias ImageWriter = (Data, URL) throws -> Void
     typealias MetadataWriter = (Data, URL) throws -> Void
 
+    struct ImageSnapshot {
+        let item: CaptureHistoryItem
+        let data: Data
+    }
+
     @Published private(set) var items: [CaptureHistoryItem]
     @Published private(set) var loadError: CaptureHistoryError?
 
@@ -351,13 +356,31 @@ final class CaptureHistoryStore: ObservableObject {
     }
 
     func data(for item: CaptureHistoryItem) throws -> Data {
-        guard let fileURL = Self.historyFileURL(
-            fileName: item.fileName,
-            historyDirectory: historyDirectory
-        ), Self.isRegularFile(fileURL) else {
-            throw CaptureHistoryError.imageNotFound
+        try imageSnapshot(for: item).data
+    }
+
+    /// Resolve a potentially stale item by ID and read its bytes under the
+    /// writer's lock. Returning a URL alone would let another crop delete that
+    /// revision before the caller opens it.
+    func imageSnapshot(for item: CaptureHistoryItem) throws -> ImageSnapshot {
+        try withExclusiveHistoryLock(reclaimsAbandonedUpdates: false) {
+            // If metadata is unreadable, retain the last known snapshot. Do not
+            // guess a newer revision from orphaned files left by a failed crop.
+            let currentItems = (try? Self.loadItems(
+                metadataURL: metadataURL,
+                fileManager: fileManager,
+                decoder: decoder
+            )) ?? items
+            items = currentItems
+            guard let currentItem = currentItems.first(where: { $0.id == item.id }),
+                  let fileURL = Self.historyFileURL(
+                    fileName: currentItem.fileName,
+                    historyDirectory: historyDirectory
+                  ), Self.isRegularFile(fileURL) else {
+                throw CaptureHistoryError.imageNotFound
+            }
+            return ImageSnapshot(item: currentItem, data: try Data(contentsOf: fileURL))
         }
-        return try Data(contentsOf: fileURL)
     }
 
     private func persist(_ items: [CaptureHistoryItem]) throws {
@@ -407,10 +430,14 @@ final class CaptureHistoryStore: ObservableObject {
         )
     }
 
-    private func withExclusiveHistoryLock<T>(_ operation: () throws -> T) throws -> T {
+    private func withExclusiveHistoryLock<T>(
+        reclaimsAbandonedUpdates: Bool = true,
+        _ operation: () throws -> T
+    ) throws -> T {
         try Self.withExclusiveHistoryLock(
             historyDirectory: historyDirectory,
             fileManager: fileManager,
+            reclaimsAbandonedUpdates: reclaimsAbandonedUpdates,
             operation: operation
         )
     }
@@ -418,6 +445,7 @@ final class CaptureHistoryStore: ObservableObject {
     private static func withExclusiveHistoryLock<T>(
         historyDirectory: URL,
         fileManager: FileManager,
+        reclaimsAbandonedUpdates: Bool = true,
         operation: () throws -> T
     ) throws -> T {
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
@@ -450,10 +478,14 @@ final class CaptureHistoryStore: ObservableObject {
         // Reclaim it even when metadata is unreadable; pending files can never
         // be valid PNG history references. Surface cleanup failures so a later
         // operation can retry without silently retaining a private screenshot.
-        try removeAbandonedImageUpdates(
-            historyDirectory: historyDirectory,
-            fileManager: fileManager
-        )
+        // Reading a valid image must remain possible even if cleanup needs a
+        // later retry (for example, a pending file is temporarily undeletable).
+        if reclaimsAbandonedUpdates {
+            try removeAbandonedImageUpdates(
+                historyDirectory: historyDirectory,
+                fileManager: fileManager
+            )
+        }
         return try operation()
     }
 

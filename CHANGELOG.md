@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.1 - 2026-10-02
+
+- Kept complete counter numbers inside their circles when resizing, with
+  consistent font fitting in the editor preview and exported images.
+- Fixed opening, copying, saving, uploading, and pinning a history entry after
+  another CaptureLab instance crops it. History actions now read the latest
+  image and metadata together; saving also survives deletion while its panel
+  is open.
+
+Artifacts:
+
+- `CaptureLab-0.5.1-macos-arm64.dmg`
+- SHA-256: `fd52e35e310eab1957c99ef2fa5508f3d2e69b1be1385676915186901a529739`
+- `CaptureLab-0.5.1-macos-arm64.dmg.sha256`
+- `CaptureLab-0.5.1-macos-arm64.dmg.sig`
+- `CaptureLab-0.5.1-macos-x86_64.dmg`
+- SHA-256: `20f11d0acb990d46ee5a1b26b5d155156db03a0a234ff6c396d381aeec3bcfc6`
+- `CaptureLab-0.5.1-macos-x86_64.dmg.sha256`
+- `CaptureLab-0.5.1-macos-x86_64.dmg.sig`
+
+Known release notes:
+
+- Shortcut recording still has limitations for shortcuts already assigned to
+  application menu commands and some shifted or non-US keyboard combinations.
+- The app uses a stable local self-signed certificate rather than Apple
+  Developer ID and is not notarized. macOS may require manual approval on
+  first launch.
+- Requires macOS 13 or later. Choose arm64 for Apple Silicon or x86_64 for Intel.
+
 ## 0.5.0 - 2026-10-01
 
 - Added annotation color, line width, and font size controls for new and selected

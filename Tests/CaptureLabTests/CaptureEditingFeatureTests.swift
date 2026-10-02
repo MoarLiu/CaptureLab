@@ -402,7 +402,9 @@ final class CaptureEditingFeatureTests: XCTestCase {
         XCTAssertEqual(preview.arrowHeadLength, export.arrowHeadLength * 0.5)
         XCTAssertEqual(export.textFontSize(for: CGRect(x: 0, y: 0, width: 100, height: 10)), 36)
         XCTAssertEqual(preview.textFontSize(for: CGRect(x: 0, y: 0, width: 50, height: 5)), 18)
-        XCTAssertEqual(preview.counterFontSize(for: 20), 18)
+        XCTAssertEqual(preview.counterFontSize(for: 40), 18)
+        XCTAssertLessThan(preview.counterFontSize(for: 20), 18)
+        XCTAssertEqual(preview.counterFontSize(for: 20), export.counterFontSize(for: 40) * 0.5, accuracy: 0.0001)
         XCTAssertEqual(preview.highlightColor.greenComponent, 1)
         var line = CaptureAnnotation.line(start: CGPoint(x: 0.2, y: 0.5), end: CGPoint(x: 0.8, y: 0.5))
         line.appearance = appearance

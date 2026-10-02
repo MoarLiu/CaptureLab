@@ -69,8 +69,16 @@ struct CaptureAnnotationStyle {
             ?? max(14 * renderedScale, min(44 * renderedScale, rect.height * 0.46))
     }
 
-    func counterFontSize(for diameter: CGFloat) -> CGFloat {
-        appearance.fontSize.map { $0 * renderedScale }
-            ?? max(12 * renderedScale, diameter * 0.48)
+    func counterFontSize(for diameter: CGFloat, text: String = "1") -> CGFloat {
+        // Resizing a counter can make its circle smaller than the requested
+        // font. Fit the complete label, including multi-digit numbers, inside
+        // the circle. Measure in source pixels so zoom only scales the result.
+        let sourceDiameter = diameter / renderedScale
+        let requestedSize = appearance.fontSize ?? max(12, sourceDiameter * 0.48)
+        let font = NSFont.systemFont(ofSize: requestedSize, weight: .bold)
+        let measured = (text as NSString).size(withAttributes: [.font: font])
+        let diagonal = hypot(measured.width, max(measured.height, requestedSize * 1.18))
+        let availableDiameter = max(1, sourceDiameter - 4)
+        return requestedSize * min(1, availableDiameter / max(diagonal, 1)) * renderedScale
     }
 }

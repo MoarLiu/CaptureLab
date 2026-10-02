@@ -771,7 +771,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         NSBezierPath(ovalIn: circleRect).fill()
 
         let value = annotation.text.isEmpty ? "1" : annotation.text
-        let fontSize = style.counterFontSize(for: diameter)
+        let fontSize = style.counterFontSize(for: diameter, text: value)
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [

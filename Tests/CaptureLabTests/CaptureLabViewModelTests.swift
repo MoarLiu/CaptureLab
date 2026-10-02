@@ -437,6 +437,66 @@ final class CaptureLabViewModelTests: XCTestCase {
         XCTAssertEqual(try Self.pixelData(XCTUnwrap(model.document?.image)), try Self.pixelData(edited))
     }
 
+    func testEveryHistoryActionUsesLatestCropFromAnotherStore() async throws {
+        let fixture = try HistoryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let store = CaptureHistoryStore(environment: fixture.environment)
+        let originalImage = Self.mosaicFixtureImage()
+        let original = try store.record(data: XCTUnwrap(originalImage.captureLabPNGData()),
+            pixelSize: originalImage.captureLabPixelSize)
+        let writer = CaptureHistoryStore(environment: fixture.environment)
+        let settingsStore = Self.settingsStore(for: fixture)
+        try settingsStore.save(Self.fixtureR2SettingsInput)
+        let pasteboard = NSPasteboard(name: .init("CaptureLabViewModelTests.stale-history.\(UUID().uuidString)"))
+        defer { pasteboard.clearContents() }
+        let savedURL = fixture.home.appendingPathComponent("saved.png")
+        var pinnedImage: NSImage?
+        var uploadedRequest: CloudflareR2UploadRequest?
+        var suggestedFileName: String?
+        let model = CaptureLabViewModel(
+            r2SettingsStore: settingsStore,
+            historyStore: store,
+            failurePresentationOperation: { _, message in XCTFail(message) },
+            pasteboard: pasteboard,
+            uploadOperation: { request in
+                uploadedRequest = request
+                return CloudflareR2UploadResult(url: "https://example.com/cropped.png", objectKey: "cropped.png", sizeBytes: request.data.count)
+            },
+            saveDestinationOperation: { name in
+                suggestedFileName = name
+                // A modal panel may outlive this history revision. Saving must
+                // use the already-read bytes after another instance deletes it.
+                do { try writer.remove(original) } catch { XCTFail("\(error)") }
+                return savedURL
+            },
+            pinOperation: { image, _ in pinnedImage = image }
+        )
+        let croppedImage = try XCTUnwrap(CaptureImageCrop.crop(originalImage,
+            selection: CGRect(x: 0.2, y: 0.2, width: 0.5, height: 0.5)))
+        let croppedData = try XCTUnwrap(croppedImage.captureLabPNGData())
+        let cropped = try XCTUnwrap(writer.updateImage(data: croppedData, for: original, pixelSize: croppedImage.captureLabPixelSize))
+        let expectedPixels = try Self.pixelData(croppedImage)
+        XCTAssertEqual(model.historyItems, [original])
+
+        model.openHistoryItem(original)
+        XCTAssertEqual(try Self.pixelData(XCTUnwrap(model.document?.image)), expectedPixels)
+        XCTAssertEqual(model.document?.sourceURL, writer.url(for: cropped))
+        XCTAssertEqual(model.historyItems, [cropped])
+        model.copyHistoryItem(original)
+        XCTAssertEqual(try Self.pixelData(XCTUnwrap(NSImage(pasteboard: pasteboard))), expectedPixels)
+        model.pinHistoryItem(original)
+        XCTAssertEqual(try Self.pixelData(XCTUnwrap(pinnedImage)), expectedPixels)
+        let uploaded = expectation(description: "stale history upload")
+        model.uploadHistoryItem(original) { _ in uploaded.fulfill() }
+        await fulfillment(of: [uploaded], timeout: 2)
+        XCTAssertEqual(uploadedRequest?.data, croppedData)
+        XCTAssertEqual(uploadedRequest?.fileName, cropped.fileName)
+        model.saveHistoryItem(original)
+        XCTAssertEqual(suggestedFileName, cropped.fileName)
+        XCTAssertEqual(try Data(contentsOf: savedURL), croppedData)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: writer.url(for: cropped).path))
+    }
+
     func testDoneHistoryWriteFailureKeepsEditsAndClipboardUntilRetry() throws {
         let fixture = try HistoryFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }
