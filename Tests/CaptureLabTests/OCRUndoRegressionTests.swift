@@ -28,7 +28,7 @@ final class OCRUndoRegressionTests: XCTestCase {
         XCTAssertEqual(model.ocrText, "Additional correction after undo")
     }
 
-    func testAnnotationUndoAndRedoKeepPendingSourceRecognitionValid() async throws {
+    func testAnnotationUndoAndRedoRejectPendingRenderedRecognitionAndAllowNewRequest() async throws {
         let fixture = try OCRUndoFixture()
         defer { fixture.remove() }
         let recognition = OCRUndoPendingOperation<OCRResult>()
@@ -39,13 +39,19 @@ final class OCRUndoRegressionTests: XCTestCase {
         await waitUntil { recognition.pendingCount == 1 }
 
         model.undoAnnotation()
-        XCTAssertTrue(model.isRecognizingText)
+        XCTAssertFalse(model.isRecognizingText)
         model.redoAnnotation()
+        XCTAssertFalse(model.isRecognizingText)
+        model.recognizeText()
+        await waitUntil { recognition.pendingCount == 2 }
+        recognition.completeNext(with: Self.ocrResult("Stale rendered text"))
+        await waitUntil { recognition.completedCount == 1 }
+        XCTAssertTrue(model.ocrText.isEmpty)
         XCTAssertTrue(model.isRecognizingText)
-        recognition.completeNext(with: Self.ocrResult("Recognized from unchanged source"))
+        recognition.completeNext(with: Self.ocrResult("Current rendered text"))
         await waitUntil { !model.isRecognizingText }
 
-        XCTAssertEqual(model.ocrText, "Recognized from unchanged source")
+        XCTAssertEqual(model.ocrText, "Current rendered text")
     }
 
     func testAnnotationUndoAndRedoKeepFrozenUploadValid() async throws {

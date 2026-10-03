@@ -5,6 +5,57 @@ import XCTest
 
 @MainActor
 final class CaptureAnnotationCanvasTests: XCTestCase {
+    func testArrowNudgeMovesOneVisiblePointAcrossZoomCropRotationAndFlip() throws {
+        for zoom in [CaptureZoomLevel.fit, .half, .actual, .double] {
+            for adjustment in [nil, CaptureDocument.Adjustment.rotateClockwise, .flipHorizontal, .flipVertical] {
+                let harness = CanvasHarness(tool: .select)
+                defer { harness.close() }
+                let original = try XCTUnwrap(harness.view.document)
+                var document = try XCTUnwrap(original.cropping(to: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)))
+                if let adjustment { document = document.adjusting(adjustment) }
+                harness.view.setDocument(document)
+                harness.view.zoomLevel = zoom
+                let annotation = CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0.4, y: 0.4, width: 0.1, height: 0.1))
+                harness.view.annotations = [annotation]
+                harness.view.synchronizeSelection(annotation.id)
+                let canvasPoint = CGPoint(x: 0.45 * document.sourcePixelSize.width, y: 0.45 * document.sourcePixelSize.height)
+                    .applying(document.geometry.transform)
+                let output = harness.view.outputDisplayRect
+                let point = CGPoint(x: output.minX + canvasPoint.x * output.width / document.canvasSize.width,
+                                    y: output.minY + canvasPoint.y * output.height / document.canvasSize.height)
+                harness.keyDown(characters: "\u{F703}", keyCode: 124)
+                harness.keyDown(characters: "\u{F701}", keyCode: 125, modifiers: .shift)
+                let moved = try XCTUnwrap(harness.view.annotations.first)
+                let movedCanvas = CGPoint(x: moved.normalizedRect.midX * document.sourcePixelSize.width,
+                                          y: moved.normalizedRect.midY * document.sourcePixelSize.height)
+                    .applying(document.geometry.transform)
+                let movedPoint = CGPoint(x: output.minX + movedCanvas.x * output.width / document.canvasSize.width,
+                                         y: output.minY + movedCanvas.y * output.height / document.canvasSize.height)
+                XCTAssertEqual(movedPoint.x - point.x, 1, accuracy: 0.001)
+                XCTAssertEqual(movedPoint.y - point.y, 10, accuracy: 0.001)
+            }
+        }
+    }
+
+    func testMovingVectorAboveRedactionReusesCompositionButChangesBelowItInvalidateCache() throws {
+        let harness = CanvasHarness(tool: .select)
+        defer { harness.close() }
+        let below = CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2))
+        let mask = CaptureAnnotation(kind: .mosaic, normalizedRect: CGRect(x: 0.05, y: 0.05, width: 0.4, height: 0.4))
+        let above = CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0.6, y: 0.6, width: 0.2, height: 0.2))
+        harness.view.annotations = [below, mask, above]
+        let bitmap = try XCTUnwrap(harness.view.bitmapImageRepForCachingDisplay(in: harness.view.bounds))
+        harness.view.cacheDisplay(in: harness.view.bounds, to: bitmap)
+        let count = harness.view.compositionRenderCount
+        XCTAssertEqual(count, 1)
+        harness.view.annotations = [below, mask, above.translatedBy(dx: 0.01, dy: 0)]
+        harness.view.cacheDisplay(in: harness.view.bounds, to: bitmap)
+        XCTAssertEqual(harness.view.compositionRenderCount, count)
+        harness.view.annotations = [below.translatedBy(dx: 0.01, dy: 0), mask, above]
+        harness.view.cacheDisplay(in: harness.view.bounds, to: bitmap)
+        XCTAssertEqual(harness.view.compositionRenderCount, count + 1)
+    }
+
     func testCropDragSelectsPixelsWithoutCreatingAnAnnotationAndEscapeCancels() throws {
         let harness = CanvasHarness(tool: .crop)
         defer { harness.close() }
@@ -269,7 +320,7 @@ final class CaptureAnnotationCanvasTests: XCTestCase {
         XCTAssertFalse(harness.view.subviews.contains { $0 is NSTextField })
     }
 
-    func testDismantleCommitsPendingTextBeforeZoomRebuild() throws {
+    func testDismantleCommitsPendingTextBeforeEditorReplacement() throws {
         let harness = CanvasHarness(tool: .text)
         defer { harness.close() }
 
@@ -283,8 +334,7 @@ final class CaptureAnnotationCanvasTests: XCTestCase {
         XCTAssertEqual(harness.boundAnnotations[0].text, "Text preserved across zoom")
         XCTAssertFalse(harness.view.subviews.contains { $0 is NSTextField })
 
-        // Fixed zoom wraps the representable in a ScrollView, so SwiftUI builds
-        // a replacement AppKit canvas from the binding committed at teardown.
+        // Reopening an editor builds a replacement canvas from committed bindings.
         let replacement = CaptureAnnotationNSCanvasView(
             frame: NSRect(x: 0, y: 0, width: 800, height: 600)
         )
@@ -442,11 +492,11 @@ private final class CanvasHarness {
         view.mouseUp(with: event(type: .leftMouseUp, location: point))
     }
 
-    func keyDown(characters: String, keyCode: UInt16) {
+    func keyDown(characters: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags = []) {
         view.keyDown(with: NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
-            modifierFlags: [],
+            modifierFlags: modifiers,
             timestamp: 0,
             windowNumber: 0,
             context: nil,

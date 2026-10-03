@@ -181,8 +181,10 @@ final class CaptureImageLayerTests: XCTestCase {
         canvas.keyDown(with: try key(code: 53, window: window))
         XCTAssertEqual(canvas.layers, [image]); XCTAssertEqual(commits, 0)
         canvas.keyDown(with: try key(code: 124, window: window))
+        let moved = canvas.viewPoint(for: CGPoint(x: canvas.layers[0].normalizedRect.midX, y: canvas.layers[0].normalizedRect.midY))
         XCTAssertEqual(canvas.layers[0].normalizedRect.minX, 0.2, accuracy: 0.00001)
-        XCTAssertEqual(canvas.layers[0].normalizedRect.minY, 0.2 - 1.0 / 80, accuracy: 0.00001)
+        XCTAssertEqual(moved.x - start.x, 1, accuracy: 0.00001)
+        XCTAssertEqual(moved.y - start.y, 0, accuracy: 0.00001)
         XCTAssertEqual(commits, 1)
         window.orderOut(nil)
     }

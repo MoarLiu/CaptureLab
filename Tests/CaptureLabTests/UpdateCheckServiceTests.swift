@@ -6,6 +6,49 @@ import XCTest
 final class UpdateCheckServiceTests: XCTestCase {
     private var temporaryRoots: [URL] = []
 
+    func testAssetURLPolicyAllowsGitHubHTTPSAndRejectsLookalikesAndCredentials() throws {
+        for host in ["github.com", "api.github.com", "objects.githubusercontent.com",
+                     "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"] {
+            XCTAssertTrue(UpdateAssetURLPolicy.allows(try XCTUnwrap(URL(string: "https://\(host)/asset.dmg"))))
+        }
+        for address in ["http://github.com/asset", "https://github.com.evil.example/asset",
+                        "https://evil.example/asset", "https://evilgithub.com/asset",
+                        "https://github.com@evil.example/asset", "https://user:password@github.com/asset",
+                        "https://github.com:8443/asset", "file:///tmp/asset.dmg"] {
+            XCTAssertFalse(UpdateAssetURLPolicy.allows(try XCTUnwrap(URL(string: address))), address)
+        }
+    }
+
+    func testReleaseRejectsUntrustedURLInEveryRequiredAsset() async throws {
+        let extensions = ["dmg", "dmg.sha256", "dmg.sig"]
+        for untrusted in extensions {
+            let assets = extensions.map { suffix in
+                ["name": "CaptureLab-0.10.0-macos-arm64.\(suffix)",
+                 "browser_download_url": suffix == untrusted ? "https://evil.example/asset" : "https://github.com/asset"]
+            }
+            let data = try JSONSerialization.data(withJSONObject: ["tag_name": "v0.10.0", "assets": assets])
+            let service = makeService(statusCode: 200, body: String(decoding: data, as: UTF8.self))
+            do {
+                _ = try await service.checkForUpdates(currentVersion: "0.9.0")
+                XCTFail("Expected rejection of \(untrusted)")
+            } catch UpdateCheckError.untrustedDownloadURL { }
+        }
+    }
+
+    func testRateLimitedResponseIncludesManualReleaseURL() async throws {
+        for status in [403, 429] {
+            let service = makeService(statusCode: status, body: "{}")
+            MockURLProtocol.register(MockResponse(statusCode: status, data: Data("{}".utf8),
+                headers: ["X-RateLimit-Remaining": "0"]), for: URL(string: "https://github.com/latest")!)
+            do {
+                _ = try await service.checkForUpdates(currentVersion: "0.9.0")
+                XCTFail("Expected rate limit")
+            } catch UpdateCheckError.rateLimited(let url) {
+                XCTAssertEqual(url.absoluteString, "https://github.com/MoarLiu/CaptureLab/releases")
+            }
+        }
+    }
+
     override func tearDown() {
         MockURLProtocol.reset()
         for url in temporaryRoots {
@@ -24,19 +67,19 @@ final class UpdateCheckServiceTests: XCTestCase {
               "assets": [
                 {
                   "name": "CaptureLab-0.2.0-macos-arm64.dmg",
-                  "browser_download_url": "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg"
+                  "browser_download_url": "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg"
                 },
                 {
                   "name": "CaptureLab-0.2.0-macos-arm64.dmg.sha256",
-                  "browser_download_url": "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg.sha256"
+                  "browser_download_url": "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg.sha256"
                 },
                 {
                   "name": "CaptureLab-0.2.0-macos-arm64.dmg.sig",
-                  "browser_download_url": "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg.sig"
+                  "browser_download_url": "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg.sig"
                 },
                 {
                   "name": "CaptureLab-0.2.0-macos-x86_64.dmg",
-                  "browser_download_url": "https://example.com/CaptureLab-0.2.0-macos-x86_64.dmg"
+                  "browser_download_url": "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-x86_64.dmg"
                 }
               ]
             }
@@ -54,15 +97,15 @@ final class UpdateCheckServiceTests: XCTestCase {
                 package: UpdatePackage(
                     dmg: UpdateAsset(
                         name: "CaptureLab-0.2.0-macos-arm64.dmg",
-                        downloadURL: URL(string: "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg")!
+                        downloadURL: URL(string: "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg")!
                     ),
                     checksum: UpdateAsset(
                         name: "CaptureLab-0.2.0-macos-arm64.dmg.sha256",
-                        downloadURL: URL(string: "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg.sha256")!
+                        downloadURL: URL(string: "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg.sha256")!
                     ),
                     signature: UpdateAsset(
                         name: "CaptureLab-0.2.0-macos-arm64.dmg.sig",
-                        downloadURL: URL(string: "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg.sig")!
+                        downloadURL: URL(string: "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg.sig")!
                     ),
                     architecture: "arm64"
                 )
@@ -89,7 +132,7 @@ final class UpdateCheckServiceTests: XCTestCase {
 
     func testReleaseCandidateDiscoversFinalRelease() async throws {
         let assets = ["dmg", "dmg.sha256", "dmg.sig"].map {
-            ["name": "CaptureLab-0.5.0-macos-arm64.\($0)", "browser_download_url": "https://example.com/\($0)"]
+            ["name": "CaptureLab-0.5.0-macos-arm64.\($0)", "browser_download_url": "https://github.com/\($0)"]
         }
         let body = try JSONSerialization.data(withJSONObject: ["tag_name": "v0.5.0", "assets": assets])
         let service = makeService(statusCode: 200, body: String(decoding: body, as: UTF8.self))
@@ -138,7 +181,7 @@ final class UpdateCheckServiceTests: XCTestCase {
               "assets": [
                 {
                   "name": "CaptureLab-0.2.0-macos-x86_64.dmg",
-                  "browser_download_url": "https://example.com/CaptureLab-0.2.0-macos-x86_64.dmg"
+                  "browser_download_url": "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-x86_64.dmg"
                 }
               ]
             }
@@ -157,9 +200,9 @@ final class UpdateCheckServiceTests: XCTestCase {
     }
 
     func testDownloadUpdateWritesDMGAndVerifiesChecksum() async throws {
-        let dmgURL = URL(string: "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg")!
-        let checksumURL = URL(string: "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg.sha256")!
-        let signatureURL = URL(string: "https://example.com/CaptureLab-0.2.0-macos-arm64.dmg.sig")!
+        let dmgURL = URL(string: "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg")!
+        let checksumURL = URL(string: "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg.sha256")!
+        let signatureURL = URL(string: "https://github.com/MoarLiu/CaptureLab/releases/download/v0.2.0/CaptureLab-0.2.0-macos-arm64.dmg.sig")!
         let dmgData = Data("fixture-dmg".utf8)
         let privateKey = Curve25519.Signing.PrivateKey()
         let digestData = Data(SHA256.hash(data: dmgData))
@@ -193,9 +236,9 @@ final class UpdateCheckServiceTests: XCTestCase {
     }
 
     func testDownloadRejectsSignatureFromDifferentKey() async throws {
-        let dmgURL = URL(string: "https://example.com/update.dmg")!
-        let checksumURL = URL(string: "https://example.com/update.dmg.sha256")!
-        let signatureURL = URL(string: "https://example.com/update.dmg.sig")!
+        let dmgURL = URL(string: "https://github.com/update.dmg")!
+        let checksumURL = URL(string: "https://github.com/update.dmg.sha256")!
+        let signatureURL = URL(string: "https://github.com/update.dmg.sig")!
         let dmgData = Data("fixture-dmg".utf8)
         let trustedKey = Curve25519.Signing.PrivateKey()
         let untrustedKey = Curve25519.Signing.PrivateKey()
@@ -234,7 +277,7 @@ final class UpdateCheckServiceTests: XCTestCase {
     }
 
     func testDownloadRejectsAssetAboveConfiguredSizeLimit() async throws {
-        let dmgURL = URL(string: "https://example.com/too-large.dmg")!
+        let dmgURL = URL(string: "https://github.com/too-large.dmg")!
         MockURLProtocol.register(
             MockResponse(statusCode: 200, data: Data(repeating: 0x41, count: 33)),
             for: dmgURL
@@ -247,11 +290,11 @@ final class UpdateCheckServiceTests: XCTestCase {
                     dmg: UpdateAsset(name: "too-large.dmg", downloadURL: dmgURL),
                     checksum: UpdateAsset(
                         name: "too-large.dmg.sha256",
-                        downloadURL: URL(string: "https://example.com/too-large.dmg.sha256")!
+                        downloadURL: URL(string: "https://github.com/too-large.dmg.sha256")!
                     ),
                     signature: UpdateAsset(
                         name: "too-large.dmg.sig",
-                        downloadURL: URL(string: "https://example.com/too-large.dmg.sig")!
+                        downloadURL: URL(string: "https://github.com/too-large.dmg.sig")!
                     ),
                     architecture: "arm64"
                 ),
@@ -267,9 +310,9 @@ final class UpdateCheckServiceTests: XCTestCase {
 
     func testMetadataAssetsHaveTheirOwnLimitAndFailuresCleanDownloads() async throws {
         let base = "CaptureLab-0.5.0-macos-arm64.dmg"
-        let dmg = UpdateAsset(name: base, downloadURL: URL(string: "https://example.com/\(base)")!)
-        let checksum = UpdateAsset(name: base + ".sha256", downloadURL: URL(string: "https://example.com/\(base).sha256")!)
-        let signature = UpdateAsset(name: base + ".sig", downloadURL: URL(string: "https://example.com/\(base).sig")!)
+        let dmg = UpdateAsset(name: base, downloadURL: URL(string: "https://github.com/\(base)")!)
+        let checksum = UpdateAsset(name: base + ".sha256", downloadURL: URL(string: "https://github.com/\(base).sha256")!)
+        let signature = UpdateAsset(name: base + ".sig", downloadURL: URL(string: "https://github.com/\(base).sig")!)
         let body = Data("fixture".utf8)
         let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
 
@@ -312,7 +355,7 @@ final class UpdateCheckServiceTests: XCTestCase {
         signaturePublicKey: Data = UpdateSigningIdentity.publicKeyRawRepresentation,
         maximumDMGSizeBytes: Int64 = UpdateCheckService.maximumDMGSizeBytes
     ) -> UpdateCheckService {
-        let latestReleaseURL = URL(string: "https://example.com/latest")!
+        let latestReleaseURL = URL(string: "https://github.com/latest")!
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         let session = URLSession(configuration: configuration)
@@ -341,6 +384,7 @@ final class UpdateCheckServiceTests: XCTestCase {
 private struct MockResponse {
     var statusCode: Int
     var data: Data
+    var headers: [String: String]? = nil
 }
 
 private final class MockURLProtocol: URLProtocol {
@@ -397,7 +441,7 @@ private final class MockURLProtocol: URLProtocol {
             url: url,
             statusCode: mock.statusCode,
             httpVersion: nil,
-            headerFields: nil
+            headerFields: mock.headers
         ) {
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         }

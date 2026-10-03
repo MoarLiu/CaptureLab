@@ -162,7 +162,7 @@ final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
     private var pendingProjectURLs: [URL] = []
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Self.documentModel?.preserveDocumentBeforeReplacement() == false ? .terminateCancel : .terminateNow
+        Self.documentModel?.prepareForTermination() == false ? .terminateCancel : .terminateNow
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

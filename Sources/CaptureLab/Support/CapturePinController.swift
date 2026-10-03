@@ -91,11 +91,19 @@ final class CapturePinWindow: NSWindow {
         opacityValueLabel.alignment = .right
         opacityValueLabel.widthAnchor.constraint(equalToConstant: 38).isActive = true
 
-        let closeButton = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: L10n.pinClose)!, target: self, action: #selector(closePin(_:)))
+        let closeButton = NSButton(title: L10n.pinClose, target: self, action: #selector(closePin(_:)))
+        if let icon = NSImage(systemSymbolName: "xmark", accessibilityDescription: L10n.pinClose) {
+            closeButton.image = icon
+            closeButton.imagePosition = .imageOnly
+        }
         closeButton.bezelStyle = .inline
         closeButton.toolTip = L10n.pinClose
 
-        let lockButton = NSButton(image: NSImage(systemSymbolName: "lock.open", accessibilityDescription: L10n.pinLock)!, target: self, action: #selector(lockPin))
+        let lockButton = NSButton(title: L10n.pinLock, target: self, action: #selector(lockPin))
+        if let icon = NSImage(systemSymbolName: "lock.open", accessibilityDescription: L10n.pinLock) {
+            lockButton.image = icon
+            lockButton.imagePosition = .imageOnly
+        }
         lockButton.bezelStyle = .inline
         lockButton.toolTip = L10n.pinLock
         self.lockButton = lockButton

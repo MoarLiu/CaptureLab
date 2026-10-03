@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import ImageIO
 
 enum CaptureHistoryError: LocalizedError {
     case imageDataUnavailable
@@ -642,15 +643,18 @@ final class CaptureHistoryStore: ObservableObject {
             .compactMap { url -> (item: CaptureHistoryItem, modifiedAt: Date)? in
                 let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
                 let createdAt = values?.creationDate ?? values?.contentModificationDate ?? Date.distantPast
-                let image = NSImage(contentsOf: url)
-                let pixelSize = image?.captureLabPixelSize ?? .zero
+                // Read dimensions without allocating a full-resolution bitmap.
+                let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+                let properties = source.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
+                let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+                let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
                 return (
                     item: CaptureHistoryItem(
                         id: Self.recoveredID(from: url.lastPathComponent) ?? UUID(),
                         createdAt: createdAt,
                         fileName: url.lastPathComponent,
-                        pixelWidth: Int(pixelSize.width),
-                        pixelHeight: Int(pixelSize.height),
+                        pixelWidth: max(0, width),
+                        pixelHeight: max(0, height),
                         projectFileName: Self.isRegularFile(url.deletingPathExtension().appendingPathExtension("capturelab"))
                             ? url.deletingPathExtension().lastPathComponent + ".capturelab" : nil
                     ),

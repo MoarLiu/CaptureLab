@@ -19,7 +19,8 @@ struct CaptureDocumentCloseGuard: NSViewRepresentable {
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); attach?(window) }
     }
 
-    // NSObject forwarding is called synchronously by AppKit on the main thread.
+    // Forward UI delegate calls only on the main thread. NSObject introspection
+    // can also arrive off-main and must not assert main-actor isolation there.
     private struct DelegateReference: @unchecked Sendable { let value: (any NSWindowDelegate)? }
 
     @MainActor
@@ -46,10 +47,12 @@ struct CaptureDocumentCloseGuard: NSViewRepresentable {
         }
         nonisolated override func responds(to selector: Selector!) -> Bool {
             if super.responds(to: selector) { return true }
+            guard Thread.isMainThread else { return false }
             return MainActor.assumeIsolated { original?.responds(to: selector) ?? false }
         }
         nonisolated override func forwardingTarget(for selector: Selector!) -> Any? {
-            MainActor.assumeIsolated { DelegateReference(value: original) }.value
+            guard Thread.isMainThread else { return nil }
+            return MainActor.assumeIsolated { DelegateReference(value: original) }.value
         }
     }
 }

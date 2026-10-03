@@ -6,7 +6,7 @@ import XCTest
 /// CAPTURELAB_SCROLLING_WINDOW_SMOKE=1 enables these; optional *_OUTPUT names a synthetic-artifact directory.
 @MainActor
 final class ScrollingCaptureWindowSmokeTests: XCTestCase {
-    private static let fixtureVersion = 1
+    private static let fixtureVersion = 2
 
     func testNativeVerticalScrollMatchesWindowServerReference() throws { try exercise(direction: .vertical) }
     func testNativeHorizontalScrollMatchesWindowServerReference() throws { try exercise(direction: .horizontal) }
@@ -108,7 +108,10 @@ final class ScrollingCaptureWindowSmokeTests: XCTestCase {
             CGWindowID(window.windowNumber), CGWindowImageOption.boundsIgnoreFraming.union(.bestResolution).rawValue)?.takeRetainedValue() else {
             throw XCTSkip("Fixture WindowServer capture failed; screen-capture preflight = \(CGPreflightScreenCaptureAccess()). No permission was requested.")
         }
-        return image
+        // Materialize WindowServer-backed pixels while the viewport is still
+        // at this position. Retaining the CGImage alone can defer its readback
+        // until after the next scroll, making both frames contain the newer view.
+        return try ScrollingCapturePixels(image: image).image()
     }
 }
 

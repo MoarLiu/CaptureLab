@@ -45,6 +45,10 @@ struct UpdateCheckService: @unchecked Sendable {
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 429 || (httpResponse.statusCode == 403
+                && httpResponse.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0") {
+                throw UpdateCheckError.rateLimited(releasesURL)
+            }
             if httpResponse.statusCode == 404 {
                 throw UpdateCheckError.repositoryUnavailable
             }
@@ -125,6 +129,9 @@ struct UpdateCheckService: @unchecked Sendable {
               let signature = release.assets.first(where: { $0.name == signatureName })
         else {
             throw UpdateCheckError.updateAssetUnavailable(architecture)
+        }
+        guard [dmg, checksum, signature].allSatisfy({ UpdateAssetURLPolicy.allows($0.downloadURL) }) else {
+            throw UpdateCheckError.untrustedDownloadURL
         }
 
         return UpdatePackage(
@@ -221,9 +228,16 @@ enum UpdateCheckError: LocalizedError {
     case downloadTooLarge(Int64)
     case checksumMismatch
     case signatureMismatch
+    case untrustedDownloadURL
+    case rateLimited(URL)
 
     var errorDescription: String? {
         switch self {
+        case .untrustedDownloadURL:
+            return L10n.text(en: "Update assets must use HTTPS on GitHub's release servers.", zh: "更新文件必须通过 HTTPS 从 GitHub 发布服务器下载。")
+        case .rateLimited(let url):
+            return L10n.text(en: "GitHub's update request limit was reached. Try again later or download from \(url.absoluteString)",
+                             zh: "已达到 GitHub 更新请求限制。请稍后重试，或前往 \(url.absoluteString) 下载。")
         case .repositoryUnavailable:
             return L10n.updateRepositoryUnavailable
         case .requestFailed:

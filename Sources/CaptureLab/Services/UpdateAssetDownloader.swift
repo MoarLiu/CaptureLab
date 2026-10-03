@@ -45,6 +45,7 @@ final class UpdateAssetDownloader: NSObject, URLSessionDataDelegate, @unchecked 
         fileManager: FileManager = .default
     ) async throws {
         try Task.checkCancellation()
+        guard let url = request.url, UpdateAssetURLPolicy.allows(url) else { throw UpdateCheckError.untrustedDownloadURL }
         let downloader = UpdateAssetDownloader(
             request: request,
             destinationURL: destinationURL,
@@ -101,6 +102,11 @@ final class UpdateAssetDownloader: NSObject, URLSessionDataDelegate, @unchecked 
             completionHandler(.cancel)
             return
         }
+        guard let url = response.url, UpdateAssetURLPolicy.allows(url) else {
+            completionHandler(.cancel)
+            finish(error: UpdateCheckError.untrustedDownloadURL)
+            return
+        }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             completionHandler(.cancel)
             finish(error: UpdateCheckError.downloadFailed)
@@ -135,6 +141,17 @@ final class UpdateAssetDownloader: NSObject, URLSessionDataDelegate, @unchecked 
         finish(error: error ?? (receivedResponse ? nil : UpdateCheckError.downloadFailed))
     }
 
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, UpdateAssetURLPolicy.allows(url) else {
+            completionHandler(nil)
+            finish(error: UpdateCheckError.untrustedDownloadURL)
+            return
+        }
+        completionHandler(request)
+    }
+
     private func finish(error: Error?) {
         guard let continuation else { return }
         self.continuation = nil
@@ -158,5 +175,14 @@ final class UpdateAssetDownloader: NSObject, URLSessionDataDelegate, @unchecked 
         }
         task = nil
         session = nil
+    }
+}
+
+enum UpdateAssetURLPolicy {
+    static func allows(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
+              url.port == nil || url.port == 443, let host = url.host?.lowercased() else { return false }
+        return ["github.com", "api.github.com", "objects.githubusercontent.com",
+                "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"].contains(host)
     }
 }

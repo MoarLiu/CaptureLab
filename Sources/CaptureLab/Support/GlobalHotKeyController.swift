@@ -21,8 +21,26 @@ final class GlobalHotKeyController: ObservableObject {
         let id: UInt32
         var perform: () -> Void
     }
-    private var registrations: [CaptureAction: Registration] = [:]
-    private var eventHandlerRef: EventHandlerRef?
+    /// Owns the C registrations independently of actor-isolated UI state, so
+    /// destruction always removes the callback before its unretained target dies.
+    private final class CarbonResources {
+        var registrations: [CaptureAction: Registration] = [:]
+        var eventHandlerRef: EventHandlerRef?
+        weak var controller: GlobalHotKeyController?
+        let unregister: UnregisterOperation
+        init(unregister: @escaping UnregisterOperation) { self.unregister = unregister }
+        func shutdown() {
+            if let eventHandlerRef { RemoveEventHandler(eventHandlerRef); self.eventHandlerRef = nil }
+            for registration in registrations.values { _ = unregister(registration.reference) }
+            registrations.removeAll()
+        }
+        deinit { shutdown() }
+    }
+    private let resources: CarbonResources
+    private var registrations: [CaptureAction: Registration] {
+        get { resources.registrations }
+        set { resources.registrations = newValue }
+    }
     private var nextHotKeyID: UInt32 = 1
     private let registerOperation: RegisterOperation
     private let unregisterOperation: UnregisterOperation
@@ -44,6 +62,7 @@ final class GlobalHotKeyController: ObservableObject {
     ) {
         self.registerOperation = registerOperation
         self.unregisterOperation = unregisterOperation
+        self.resources = CarbonResources(unregister: unregisterOperation)
         self.installEventHandlerOverride = installEventHandlerOverride
     }
 
@@ -115,9 +134,7 @@ final class GlobalHotKeyController: ObservableObject {
     }
 
     func shutdown() {
-        for registration in registrations.values { _ = unregisterOperation(registration.reference) }
-        registrations.removeAll()
-        if let eventHandlerRef { RemoveEventHandler(eventHandlerRef); self.eventHandlerRef = nil }
+        resources.shutdown()
     }
 
     func handleHotKey(id: UInt32) {
@@ -125,7 +142,7 @@ final class GlobalHotKeyController: ObservableObject {
     }
 
     private func installEventHandlerIfNeeded() -> OSStatus {
-        guard eventHandlerRef == nil else {
+        guard resources.eventHandlerRef == nil else {
             return noErr
         }
 
@@ -137,14 +154,15 @@ final class GlobalHotKeyController: ObservableObject {
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
-        let userData = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        resources.controller = self
+        let userData = UnsafeMutableRawPointer(Unmanaged.passUnretained(resources).toOpaque())
         return InstallEventHandler(
             GetApplicationEventTarget(),
             GlobalHotKeyController.eventHandler,
             1,
             &eventType,
             userData,
-            &eventHandlerRef
+            &resources.eventHandlerRef
         )
     }
 
@@ -174,9 +192,10 @@ final class GlobalHotKeyController: ObservableObject {
             return noErr
         }
 
-        let controller = Unmanaged<GlobalHotKeyController>
+        let resources = Unmanaged<CarbonResources>
             .fromOpaque(userData)
             .takeUnretainedValue()
+        guard let controller = resources.controller else { return noErr }
         Task { @MainActor in
             controller.handleHotKey(id: hotKeyID.id)
         }

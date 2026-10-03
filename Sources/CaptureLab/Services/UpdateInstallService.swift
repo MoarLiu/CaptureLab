@@ -39,6 +39,7 @@ struct UpdateInstallService {
         guard Self.isRegularExecutableFile(at: swapHelperURL) else {
             throw UpdateInstallError.invalidSwapHelper
         }
+        try Self.validateWritableTarget(standardizedTargetBundleURL, fileManager: fileManager)
 
         let metadata = try Self.packageMetadata(from: dmgURL)
         let version = expectedVersion ?? metadata.version
@@ -94,6 +95,24 @@ struct UpdateInstallService {
             .standardizedFileURL
             .deletingLastPathComponent()
             .appendingPathComponent(".CaptureLab.update.lock", isDirectory: false)
+    }
+
+    static func validateWritableTarget(_ target: URL, fileManager: FileManager = .default) throws {
+        let parent = target.deletingLastPathComponent()
+        guard fileManager.isWritableFile(atPath: parent.path) else { throw UpdateInstallError.installationNotWritable }
+        let lock = installLockURL(for: target)
+        if fileManager.fileExists(atPath: lock.path), !fileManager.isWritableFile(atPath: lock.path) {
+            throw UpdateInstallError.installationNotWritable
+        }
+        // Probe the exact directory used for same-filesystem atomic swapping.
+        let probe = parent.appendingPathComponent(".CaptureLab.write-check-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: probe, withIntermediateDirectories: false)
+            try fileManager.removeItem(at: probe)
+        } catch {
+            try? fileManager.removeItem(at: probe)
+            throw UpdateInstallError.installationNotWritable
+        }
     }
 
     static func isRegularExecutableFile(at url: URL) -> Bool {
@@ -901,9 +920,13 @@ enum UpdateInstallError: LocalizedError {
     case invalidSwapHelper
     case invalidUpdatePackage
     case installerLaunchFailed(String)
+    case installationNotWritable
 
     var errorDescription: String? {
         switch self {
+        case .installationNotWritable:
+            return L10n.text(en: "CaptureLab cannot update in this folder. Install the new release manually, or move CaptureLab to your user Applications folder and try again.",
+                             zh: "CaptureLab 无法写入当前安装目录。请手动安装新版本，或将 CaptureLab 移至个人 Applications 文件夹后重试。")
         case .invalidBundleLocation:
             return L10n.updateInstallFailed("The current app bundle could not be located.")
         case .invalidSwapHelper:

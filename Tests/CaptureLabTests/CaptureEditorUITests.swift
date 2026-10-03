@@ -6,6 +6,41 @@ import XCTest
 
 @MainActor
 final class CaptureEditorUITests: XCTestCase {
+    func testFitAndFixedZoomKeepTheSameNativeCanvasAndCommitPendingText() async throws {
+        _ = NSApplication.shared
+        let state = ZoomFixtureState()
+        let document = CaptureDocument(image: try fixtureImage(), sourceURL: nil, createdAt: Date())
+        let annotation = CaptureAnnotation.text(normalizedRect: CGRect(x: 0.2, y: 0.2, width: 0.4, height: 0.2), text: "Before zoom")
+        state.annotations = [annotation]
+        let root = ZoomFixtureView(document: document, state: state)
+        let hosting = NSHostingView(rootView: root)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        hosting.layoutSubtreeIfNeeded()
+        let canvas = try XCTUnwrap(nativeDescendants(of: hosting).compactMap { $0 as? CaptureAnnotationNSCanvasView }.first)
+        let output = canvas.outputDisplayRect
+        let point = canvas.convert(CGPoint(x: output.minX + output.width * 0.4, y: output.minY + output.height * 0.3), to: nil)
+        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 2, pressure: 1))
+        canvas.mouseDown(with: click)
+        let field = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextField }.first)
+        if let editor = field.currentEditor() { editor.string = "Committed at zoom" }
+        else { field.stringValue = "Committed at zoom" }
+        for zoom in [CaptureZoomLevel.actual, .double, .fit] {
+            state.zoom = zoom
+            try await Task.sleep(nanoseconds: 100_000_000)
+            hosting.layoutSubtreeIfNeeded()
+            let current = try XCTUnwrap(nativeDescendants(of: hosting).compactMap { $0 as? CaptureAnnotationNSCanvasView }.first)
+            XCTAssertTrue(current === canvas)
+            XCTAssertEqual(state.annotations.first?.text, "Committed at zoom")
+            XCTAssertFalse(canvas.subviews.contains { $0 is NSTextField })
+        }
+    }
     func testMergedEditorAndNewPanelsFitTheirWindows() async throws {
         _ = NSApplication.shared
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureMergedUI-\(UUID().uuidString)")
@@ -226,6 +261,22 @@ final class CaptureEditorUITests: XCTestCase {
         context.setFillColor(NSColor.systemBlue.cgColor)
         context.fill(CGRect(x: 0, y: 0, width: 640, height: 360))
         return NSImage(cgImage: try XCTUnwrap(context.makeImage()), size: CGSize(width: 640, height: 360))
+    }
+}
+
+@MainActor
+private final class ZoomFixtureState: ObservableObject {
+    @Published var zoom: CaptureZoomLevel = .fit
+    @Published var annotations: [CaptureAnnotation] = []
+    @Published var tool: CaptureTool = .select
+}
+
+private struct ZoomFixtureView: View {
+    let document: CaptureDocument
+    @ObservedObject var state: ZoomFixtureState
+    var body: some View {
+        CaptureCanvasView(document: document, annotations: $state.annotations, selectedTool: $state.tool,
+                          zoomLevel: $state.zoom, captureAction: {}, openAction: {})
     }
 }
 

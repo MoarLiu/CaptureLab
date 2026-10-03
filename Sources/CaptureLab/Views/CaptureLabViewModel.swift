@@ -85,6 +85,11 @@ final class CaptureLabViewModel: ObservableObject {
 
     @Published var annotations: [CaptureAnnotation] = [] {
         didSet {
+            if oldValue != annotations {
+                cancelTextRecognition()
+                let isRedaction: (CaptureAnnotation) -> Bool = { $0.kind == .blur || $0.kind == .mosaic }
+                if oldValue.filter(isRedaction) != annotations.filter(isRedaction) { ocrText = "" }
+            }
             trackAnnotationChange(from: oldValue, to: annotations)
             if let id = selectedAnnotationID, !annotations.contains(where: { $0.id == id }) {
                 selectedAnnotationID = nil
@@ -119,7 +124,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
     @Published var finishEditingError: String?
 
-    private let updateCheckService = UpdateCheckService()
+    private let updateCheckService: UpdateCheckService
     private let updateInstallService = UpdateInstallService()
     private let r2SettingsStore: CloudflareR2SettingsStore
     let historyStore: CaptureHistoryStore
@@ -128,12 +133,14 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var latestCapture: CaptureImageSnapshot?
     private var importRequestID = UUID()
     private var pendingSaveSnapshot: (id: UUID, annotations: [CaptureAnnotation], data: Data)?
+    private var pendingUpdateInstallation: (() throws -> Void)?
     var presentEditor: (() -> Void)?
     var presentRecognition: (() -> Void)?
     var presentCaptureLauncher: (() -> Void)?
     lazy var directRecognition = DirectRecognitionController(pasteboard: pasteboard, text: textRecognitionOperation)
 
     func performCaptureAction(_ action: CaptureAction) {
+        guard !isCheckingForUpdates, pendingUpdateInstallation == nil else { return }
         switch action {
         case .launcher: presentCaptureLauncher?()
         case .text: capture(.region, recognition: .text)
@@ -168,6 +175,7 @@ final class CaptureLabViewModel: ObservableObject {
     private var currentHistoryItem: CaptureHistoryItem?
 
     init() {
+        self.updateCheckService = UpdateCheckService()
         self.r2SettingsStore = CloudflareR2SettingsStore()
         self.historyStore = CaptureHistoryStore()
         self.workflowSettings = CaptureWorkflowSettings()
@@ -186,6 +194,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     init(r2SettingsStore: CloudflareR2SettingsStore) {
+        self.updateCheckService = UpdateCheckService()
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = CaptureHistoryStore()
         self.workflowSettings = CaptureWorkflowSettings()
@@ -216,8 +225,10 @@ final class CaptureLabViewModel: ObservableObject {
         pngDataRenderingOperation: @escaping PNGDataRenderingOperation = CaptureLabViewModel.defaultPNGDataRenderingOperation,
         saveDestinationOperation: @escaping SaveDestinationOperation = CaptureLabViewModel.defaultSaveDestinationOperation,
         pinOperation: @escaping PinOperation = CaptureLabViewModel.defaultPinOperation,
-        workflowSettings: CaptureWorkflowSettings? = nil
+        workflowSettings: CaptureWorkflowSettings? = nil,
+        updateCheckService: UpdateCheckService = UpdateCheckService()
     ) {
+        self.updateCheckService = updateCheckService
         self.r2SettingsStore = r2SettingsStore
         self.historyStore = historyStore
         self.workflowSettings = workflowSettings ?? CaptureWorkflowSettings(defaults: nil)
@@ -356,7 +367,8 @@ final class CaptureLabViewModel: ObservableObject {
             guard let image = CaptureLayerComposition.render(source: preview.image, layers: preview.imageLayers) else { return nil }
             canvasSourceCache = (preview.id, image)
         }
-        preview.image = canvasSourceCache!.image
+        guard let image = canvasSourceCache?.image else { return nil }
+        preview.image = image
         preview.imageLayers = []
         return preview
     }
@@ -433,7 +445,7 @@ final class CaptureLabViewModel: ObservableObject {
 
     func captureScrolling(_ direction: ScrollingCaptureDirection,
                           operation: @escaping ScrollingCaptureOperation = CaptureLabViewModel.defaultScrollingCaptureOperation) {
-        guard !isCapturing else { return }
+        guard !isCapturing, !isCheckingForUpdates, pendingUpdateInstallation == nil else { return }
         directRecognition.cancel()
         isCapturing = true
         overlayController.isCapturing = true
@@ -555,7 +567,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func capture(_ mode: CaptureMode, recognition: DirectRecognitionController.Kind? = nil, onSuccess: (() -> Void)? = nil) {
-        guard !isCapturing else { return }
+        guard !isCapturing, !isCheckingForUpdates, pendingUpdateInstallation == nil else { return }
         directRecognition.cancel()
         if recognition != nil { cancelTextRecognition(); cancelUpload() }
         isCapturing = true
@@ -634,7 +646,7 @@ final class CaptureLabViewModel: ObservableObject {
             let data = try CaptureImageImport.pngData(from: data)
             var item: CaptureHistoryItem?
             var historyFailure: Error?
-            let image = NSImage(data: data)!
+            guard let image = NSImage(data: data), image.isValid else { throw CaptureLabError.imageLoadFailed }
             do {
                 item = try historyStore.record(data: data, pixelSize: image.captureLabPixelSize)
                 historyItems = historyStore.items
@@ -680,6 +692,31 @@ final class CaptureLabViewModel: ObservableObject {
             reportFailure(error.localizedDescription, title: L10n.historySaveFailedTitle)
             return false
         }
+    }
+
+    /// Launch an update only inside the successful application termination gate.
+    /// A cancelled quit drops the request, so a later ordinary quit cannot install it.
+    func prepareForTermination() -> Bool {
+        let installation = pendingUpdateInstallation
+        pendingUpdateInstallation = nil
+        guard preserveDocumentBeforeReplacement() else { return false }
+        do {
+            try installation?()
+            return true
+        } catch {
+            presentUpdateFailure(error)
+            return false
+        }
+    }
+
+    func requestUpdateInstallation(_ installation: @escaping () throws -> Void,
+                                   terminate: () -> Void = { NSApp.terminate(nil) }) {
+        guard pendingUpdateInstallation == nil else { return }
+        pendingUpdateInstallation = installation
+        terminate()
+        // NSApplication termination is synchronous. If another gate cancelled
+        // before reaching our delegate, discard the request as well.
+        pendingUpdateInstallation = nil
     }
 
     @discardableResult
@@ -1202,13 +1239,14 @@ final class CaptureLabViewModel: ObservableObject {
 
     func recognizeText() {
         directRecognition.cancel()
-        guard let document, let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
-              let image = document.applyingGeometry(to: source)?.captureLabCGImage() else {
+        CaptureEditingSession.commitPendingTextEdits()
+        cancelTextRecognition()
+        ocrText = ""
+        guard let document, let image = renderImage(document: document)?.captureLabCGImage() else {
             reportFailure(CaptureLabError.ocrImageUnavailable.localizedDescription, title: L10n.ocrFailedTitle)
             return
         }
 
-        cancelTextRecognition()
         let requestID = UUID()
         let generation = documentGeneration
         ocrRequestID = requestID
@@ -1269,7 +1307,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func checkForUpdates() {
-        guard !isCheckingForUpdates else {
+        guard !isCheckingForUpdates, !isCapturing, pendingUpdateInstallation == nil else {
             return
         }
 
@@ -1314,8 +1352,8 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func restore(_ snapshot: EditSnapshot) {
-        // OCR reads the source image, and uploads already own their rendered
-        // bytes. Annotation-only history changes do not invalidate either.
+        // OCR reads the rendered annotations; changing them cancels pending OCR.
+        // Uploads already own their rendered bytes and remain valid.
         // Cropping creates a new document ID, including when undoing a crop.
         let sourceChanged = document?.id != snapshot.document?.id
         if sourceChanged {
@@ -1528,7 +1566,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.10.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {
@@ -1553,12 +1591,14 @@ final class CaptureLabViewModel: ObservableObject {
                 statusMessage = L10n.downloadingUpdate(latestVersion)
                 let dmgURL = try await updateCheckService.downloadUpdate(package, latestVersion: latestVersion)
                 statusMessage = L10n.installingUpdate
-                try updateInstallService.installAndRelaunch(
-                    dmgURL: dmgURL,
-                    expectedVersion: latestVersion,
-                    expectedArchitecture: package.architecture
-                )
-                NSApp.terminate(nil)
+                let installer = updateInstallService
+                requestUpdateInstallation {
+                    try installer.installAndRelaunch(
+                        dmgURL: dmgURL,
+                        expectedVersion: latestVersion,
+                        expectedArchitecture: package.architecture
+                    )
+                }
             }
         case .upToDate(let currentVersion, _):
             statusMessage = L10n.upToDateTitle
@@ -1572,6 +1612,16 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func presentUpdateFailure(_ error: Error) {
+        if let updateError = error as? UpdateCheckError, case .rateLimited(let url) = updateError {
+            statusMessage = error.localizedDescription
+            let alert = NSAlert()
+            alert.messageText = L10n.updateCheckFailedTitle
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: L10n.text(en: "Open Releases", zh: "打开发布页面"))
+            alert.addButton(withTitle: L10n.later)
+            if alert.captureLabRunModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+            return
+        }
         reportFailure(error.localizedDescription, title: L10n.updateCheckFailedTitle)
     }
 

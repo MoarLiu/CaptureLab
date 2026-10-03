@@ -3,6 +3,35 @@ import XCTest
 @testable import CaptureLab
 
 final class UpdateAssetDownloaderTests: XCTestCase {
+    func testUntrustedInitialURLNeverStartsTransportOrCreatesAsset() async throws {
+        let fixture = try DownloadStreamFixture(contentLength: nil)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StreamingUpdateProtocol.self]
+        do {
+            try await UpdateAssetDownloader.download(request: URLRequest(url: URL(string: "http://github.com/asset")!),
+                to: fixture.output, maximumSizeBytes: 100, configuration: config)
+            XCTFail("Expected URL rejection")
+        } catch UpdateCheckError.untrustedDownloadURL { }
+        XCTAssertEqual(fixture.bytesSent, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.output.path))
+    }
+
+    func testRedirectToUntrustedHostIsRejectedBeforeFollowingAndRemovesAsset() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureLabRedirect-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("asset.dmg")
+        let url = URL(string: "https://github.com/\(UUID().uuidString)")!
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RedirectUpdateProtocol.self]
+        do {
+            try await UpdateAssetDownloader.download(request: URLRequest(url: url), to: output,
+                maximumSizeBytes: 100, configuration: config)
+            XCTFail("Expected redirect rejection")
+        } catch UpdateCheckError.untrustedDownloadURL { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+        XCTAssertEqual(RedirectUpdateProtocol.requests(for: url.path), [url])
+    }
     func testAnnouncedOversizeResponseCancelsWithoutWritingBody() async throws {
         let fixture = try DownloadStreamFixture(contentLength: "1048576")
         do {
@@ -98,9 +127,38 @@ final class UpdateAssetDownloaderTests: XCTestCase {
     }
 }
 
+private final class RedirectUpdateProtocol: URLProtocol {
+    private final class Recorder: @unchecked Sendable {
+        let lock = NSLock()
+        var urls: [URL] = []
+    }
+    private static let recorder = Recorder()
+    static func requests(for path: String) -> [URL] {
+        recorder.lock.lock(); defer { recorder.lock.unlock() }
+        return recorder.urls.filter { $0.path == path }
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url else { return }
+        Self.recorder.lock.lock(); Self.recorder.urls.append(url); Self.recorder.lock.unlock()
+        if url.host == "github.com" {
+            let target = URL(string: "https://evil.example\(url.path)")!
+            let response = HTTPURLResponse(url: url, statusCode: 302, httpVersion: nil, headerFields: ["Location": target.absoluteString])!
+            client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: target), redirectResponse: response)
+        } else {
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data([1]))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
+
 private final class DownloadStreamFixture: @unchecked Sendable {
     let output: URL
-    let url = URL(string: "https://example.invalid/\(UUID().uuidString)")!
+    let url = URL(string: "https://objects.githubusercontent.com/github-production-release-asset-2e65be/fixture/\(UUID().uuidString)")!
     let contentLength: String?
     let statusCode: Int
     let chunkCount: Int
@@ -160,7 +218,10 @@ private final class DownloadStreamFixture: @unchecked Sendable {
     }
 }
 
-private final class StreamingUpdateProtocol: URLProtocol, @unchecked Sendable {
+private final class StreamingUpdateProtocol: URLProtocol {
+    // Foundation marks URLProtocol's Sendable conformance unavailable. This
+    // reference is used only to schedule delivery on this protocol's serial queue.
+    private struct DeliveryReference: @unchecked Sendable { let value: StreamingUpdateProtocol }
     private final class Registry: @unchecked Sendable {
         let lock = NSLock()
         // Avoid keeping fixtures (and their temporary directories) alive here.
@@ -197,19 +258,23 @@ private final class StreamingUpdateProtocol: URLProtocol, @unchecked Sendable {
     }
 
     private func sendChunk(_ index: Int) {
-        deliveryQueue.asyncAfter(deadline: .now() + 0.01) { [self] in
-            guard let fixture, fixture.shouldSendChunk(index) else { return }
-            if index == fixture.chunkCount {
-                if fixture.failsAtEnd {
-                    client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
-                } else {
-                    client?.urlProtocolDidFinishLoading(self)
-                }
-                return
-            }
-            client?.urlProtocol(self, didLoad: Data(repeating: UInt8(index % 256), count: 8192))
-            sendChunk(index + 1)
+        let reference = DeliveryReference(value: self)
+        deliveryQueue.asyncAfter(deadline: .now() + 0.01) {
+            reference.value.deliverChunk(index)
         }
+    }
+    private func deliverChunk(_ index: Int) {
+        guard let fixture, fixture.shouldSendChunk(index) else { return }
+        if index == fixture.chunkCount {
+            if fixture.failsAtEnd {
+                client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            } else {
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            return
+        }
+        client?.urlProtocol(self, didLoad: Data(repeating: UInt8(index % 256), count: 8192))
+        sendChunk(index + 1)
     }
     override func stopLoading() { fixture?.cancel() }
 }

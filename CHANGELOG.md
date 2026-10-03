@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.0 - 2026-10-03
+
+- Editor OCR now reads the final rendered composition, preserves redactions,
+  fails closed when rendering fails, and rejects results from outdated annotations.
+- Start the update installer only after document recovery succeeds in the quit
+  gate; cancelled quits cannot leave an installer waiting for a later exit.
+  Block new capture actions during update checks, confirmation, and download.
+- Restrict update transport and redirects to HTTPS on GitHub release servers,
+  explain API rate limits with a release-page shortcut, and detect unwritable
+  installation folders before quitting.
+- Clean up Carbon hotkeys on destruction, guard off-main window-delegate
+  introspection, and remove avoidable image/symbol/color force unwraps.
+- Make keyboard nudges consistent across zoom and image transforms, preserve
+  the native annotation canvas through zoom changes, and safely commit text edits.
+- Reuse the blur context, read history dimensions without decoding full images,
+  transfer thumbnails without PNG round trips, and cache the rendered prefix
+  below the last blur/mosaic while drawing later vector annotations independently.
+
+Validation: 385 tests pass without skips under strict concurrency and warnings
+as errors, including both live WindowServer fixtures. ARM64 and x86_64 Release
+builds target macOS 13. Review decisions and validation limits:
+[0.10.0 review remediation record](docs/0.10.0-review-remediation.md).
+
+Release artifacts verified; publication approved:
+
+- `CaptureLab-0.10.0-macos-arm64.dmg`
+- SHA-256: `c8cd68b38b6871c0fe0a0b413e124bf22a2324569c97fbda115cde9d4b73fe2c`
+- `CaptureLab-0.10.0-macos-x86_64.dmg`
+- SHA-256: `4b248f9f241e115b75b8fd3a1978cb7da6646957efedf6e7a37820a7e169bc5b`
+- Each package includes matching `.dmg.sha256` and `.dmg.sig` sidecars.
+
+Uses the existing self-signed identity without notarization or hardened runtime;
+Gatekeeper may require manual approval. Physical Intel/macOS 13, mixed-display
+and Space interaction, and third-party scrolling compatibility remain unverified.
+
 ## 0.9.0 - 2026-10-03
 
 This version combines the previously planned 0.9.0, 0.10.0, and 0.11.0 work.

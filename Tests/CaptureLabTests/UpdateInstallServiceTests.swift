@@ -2,6 +2,35 @@ import XCTest
 @testable import CaptureLab
 
 final class UpdateInstallServiceTests: XCTestCase {
+    func testWritableTargetProbeUsesParentAndLeavesNoTemporaryDirectories() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureLabWriteProbe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try UpdateInstallService.validateWritableTarget(root.appendingPathComponent("CaptureLab.app"))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    func testUnwritableParentOrExistingLockIsRejectedBeforeInstallerLaunch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureLabPermissionProbe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let helper = root.appendingPathComponent("helper")
+        try Data("fixture".utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let target = root.appendingPathComponent("CaptureLab.app")
+        let lock = UpdateInstallService.installLockURL(for: target)
+        try Data().write(to: lock)
+        for denied in [root.path, lock.path] {
+            let manager = DeniedUpdateFileManager(deniedPath: denied)
+            let service = UpdateInstallService(fileManager: manager, swapHelperURL: helper)
+            XCTAssertThrowsError(try service.installAndRelaunch(
+                dmgURL: root.appendingPathComponent("CaptureLab-0.10.0-macos-arm64.dmg"), targetBundleURL: target
+            )) { error in
+                guard case UpdateInstallError.installationNotWritable = error else { return XCTFail("Unexpected: \(error)") }
+            }
+        }
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)), ["helper", ".CaptureLab.update.lock"])
+    }
     func testPackageMetadataParsesVersionAndArchitecture() throws {
         XCTAssertEqual(
             try UpdateInstallService.packageMetadata(
@@ -838,4 +867,12 @@ echo "$NAME-end" >> "$EVENTS_PATH"
 private struct UpdateDecisionResult: Equatable {
     var status: Int32
     var output: String
+}
+
+private final class DeniedUpdateFileManager: FileManager, @unchecked Sendable {
+    let deniedPath: String
+    init(deniedPath: String) { self.deniedPath = deniedPath; super.init() }
+    override func isWritableFile(atPath path: String) -> Bool {
+        path == deniedPath ? false : super.isWritableFile(atPath: path)
+    }
 }

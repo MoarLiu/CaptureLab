@@ -5,6 +5,34 @@ import XCTest
 
 @MainActor
 final class GlobalHotKeyControllerTests: XCTestCase {
+    func testDestructionUnregistersHotKeysWithoutExplicitShutdown() {
+        var unregistered: [EventHotKeyRef] = []
+        let reference = OpaquePointer(bitPattern: 101)!
+        var controller: GlobalHotKeyController? = GlobalHotKeyController(
+            registerOperation: { _, _, _, value in value = reference; return noErr },
+            unregisterOperation: { unregistered.append($0); return noErr },
+            installEventHandlerOverride: { noErr }
+        )
+        weak let released = controller
+        XCTAssertTrue(controller!.configure(shortcut: .defaultCapture, action: {}))
+        controller = nil
+        XCTAssertNil(released)
+        XCTAssertEqual(unregistered, [reference])
+    }
+
+    func testExplicitShutdownAndDestructionDoNotUnregisterTwice() {
+        var calls = 0
+        var controller: GlobalHotKeyController? = GlobalHotKeyController(
+            registerOperation: { _, _, _, value in value = OpaquePointer(bitPattern: 102); return noErr },
+            unregisterOperation: { _ in calls += 1; return noErr },
+            installEventHandlerOverride: { noErr }
+        )
+        XCTAssertTrue(controller!.configure(shortcut: .defaultCapture, action: {}))
+        controller?.shutdown()
+        controller = nil
+        XCTAssertEqual(calls, 1)
+    }
+
     func testDefaultShortcutMapsToCarbonKeyCode() {
         XCTAssertEqual(CaptureKeyboardShortcut.defaultCapture.carbonKeyCode, 45)
     }

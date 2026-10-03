@@ -81,9 +81,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
         _ nsView: CaptureAnnotationNSCanvasView,
         coordinator: Coordinator
     ) {
-        // Switching between fit and fixed zoom changes the SwiftUI hierarchy
-        // around this representable. Flush the field editor before SwiftUI tears
-        // down the old AppKit view, then release its shared-session callback.
+        // Flush edits before document or editor teardown, then release the callback.
         nsView.prepareForDismantle()
     }
 
@@ -125,7 +123,17 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     var zoomLevel: CaptureZoomLevel = .fit {
         didSet {
             if oldValue != zoomLevel {
-                commitActiveTextEdit()
+                // SwiftUI sets zoom inside updateNSView. Publish the text edit
+                // on the next main turn, outside that update transaction.
+                // Export/replacement can still flush it synchronously via the session.
+                let documentID = document?.id
+                if let field = activeTextField {
+                    DispatchQueue.main.async { [weak self, weak field] in
+                        guard let self, let field, self.activeTextField === field,
+                              self.document?.id == documentID else { return }
+                        self.commitActiveTextEdit()
+                    }
+                }
                 interaction = nil
                 needsDisplay = true
             }
@@ -135,6 +143,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     var onAnnotationsChanged: (([CaptureAnnotation]) -> Void)?
 
     private var transformedPreview: (id: UUID, annotations: [CaptureAnnotation], image: NSImage?)?
+    private(set) var compositionRenderCount = 0
     private var documentSignature: String?
     private var selectedAnnotationID: UUID? {
         didSet {
@@ -239,16 +248,22 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
 
         let imageRect = imageDisplayRect(for: document.image.size)
-        let usesGeometry = document.geometry != CaptureDocumentGeometry()
-            || annotations.contains { $0.kind == .blur || $0.kind == .mosaic }
         let visibleAnnotations = annotations.filter { $0.id != editingTextAnnotationID }
+        // Effects consume all pixels below them. Cache exactly that prefix and
+        // draw later vectors separately, preserving the original stacking order.
+        let effectIndex = visibleAnnotations.lastIndex { $0.kind == .blur || $0.kind == .mosaic }
+        let rasterAnnotations = effectIndex.map { Array(visibleAnnotations[...$0]) } ?? []
+        let vectorAnnotations = effectIndex.map { Array(visibleAnnotations.dropFirst($0 + 1)) } ?? visibleAnnotations
+        let usesGeometry = document.geometry != CaptureDocumentGeometry() || effectIndex != nil
         if usesGeometry {
-            if transformedPreview?.id != document.id || transformedPreview?.annotations != visibleAnnotations {
-                let composed = document.image.renderedWithCaptureLabAnnotations(visibleAnnotations)
-                transformedPreview = (document.id, visibleAnnotations, composed.flatMap { document.applyingGeometry(to: $0) })
+            if transformedPreview?.id != document.id || transformedPreview?.annotations != rasterAnnotations {
+                let composed = document.image.renderedWithCaptureLabAnnotations(rasterAnnotations)
+                transformedPreview = (document.id, rasterAnnotations, composed.flatMap { document.applyingGeometry(to: $0) })
+                compositionRenderCount += 1
             }
             // An unsuccessful composition leaves an empty canvas, never a source fallback.
-            transformedPreview?.image?.draw(in: outputDisplayRect, from: .zero,
+            guard let preview = transformedPreview?.image else { return }
+            preview.draw(in: outputDisplayRect, from: .zero,
                 operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
         NSGraphicsContext.saveGraphicsState()
@@ -259,8 +274,8 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                 operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             NSColor.separatorColor.withAlphaComponent(0.3).setStroke()
             NSBezierPath(rect: imageRect).stroke()
-            for annotation in visibleAnnotations { draw(annotation, imageRect: imageRect, document: document) }
         }
+        for annotation in vectorAnnotations { draw(annotation, imageRect: imageRect, document: document) }
 
         if let draft = draftAnnotation(in: imageRect) {
             var styledDraft = draft
@@ -468,10 +483,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             let key = event.charactersIgnoringModifiers
             let viewDelta = CGPoint(x: key == "\u{F702}" ? -amount : key == "\u{F703}" ? amount : 0,
                                     y: key == "\u{F700}" ? -amount : key == "\u{F701}" ? amount : 0)
-            let inverse = document.geometry.transform.inverted()
+            let imageRect = imageDisplayRect(for: document.image.size)
+            guard imageRect.width > 0, imageRect.height > 0 else { return }
+            let inverse = sourceViewTransform.inverted()
             let delta = viewDelta.applying(CGAffineTransform(a: inverse.a, b: inverse.b, c: inverse.c, d: inverse.d, tx: 0, ty: 0))
-            replaceAnnotation(selected.translatedBy(dx: delta.x / document.sourcePixelSize.width,
-                                                     dy: delta.y / document.sourcePixelSize.height), id: selected.id)
+            replaceAnnotation(selected.translatedBy(dx: delta.x / imageRect.width,
+                                                     dy: delta.y / imageRect.height), id: selected.id)
             needsDisplay = true
         default:
             super.keyDown(with: event)

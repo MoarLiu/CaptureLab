@@ -22,19 +22,14 @@ struct CaptureCanvasView: View {
                 CanvasBackdropView()
 
                 if let document {
-                    if zoomLevel.scale == nil {
+                    let contentSize = CaptureCanvasLayout.contentSize(
+                        imageSize: document.displaySize,
+                        viewportSize: proxy.size,
+                        zoomLevel: zoomLevel
+                    )
+                    ScrollView([.horizontal, .vertical], showsIndicators: zoomLevel.scale != nil) {
                         annotationCanvas(for: document)
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                    } else {
-                        let contentSize = CaptureCanvasLayout.contentSize(
-                            imageSize: document.displaySize,
-                            viewportSize: proxy.size,
-                            zoomLevel: zoomLevel
-                        )
-                        ScrollView([.horizontal, .vertical]) {
-                            annotationCanvas(for: document)
-                                .frame(width: contentSize.width, height: contentSize.height)
-                        }
+                            .frame(width: contentSize.width, height: contentSize.height)
                     }
                 } else {
                     emptyState

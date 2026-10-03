@@ -466,16 +466,15 @@ final class CaptureLayersNSCanvasView: NSView {
             } catch { onError(error.localizedDescription) }
             return
         }
-        guard let document, [123, 124, 125, 126].contains(event.keyCode) else { super.keyDown(with: event); return }
+        guard document != nil, [123, 124, 125, 126].contains(event.keyCode) else { super.keyDown(with: event); return }
         let speed: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
         // Keyboard directions are screen directions after crop/rotation/flip.
         let dx: CGFloat = event.keyCode == 123 ? -speed : event.keyCode == 124 ? speed : 0
         let dy: CGFloat = event.keyCode == 126 ? -speed : event.keyCode == 125 ? speed : 0
-        let t = document.geometry.transform.inverted()
-        let delta = CGPoint(x: dx, y: dy).applying(t), origin = CGPoint.zero.applying(t)
+        guard outputDisplayRect.width > 0, outputDisplayRect.height > 0 else { return }
+        let delta = normalizedPoint(CGPoint(x: dx, y: dy)), origin = normalizedPoint(.zero)
         commit(CaptureObjectOperations.translated(layers: layers, annotations: annotations, selection: selection,
-                                                  dx: (delta.x - origin.x) / document.sourcePixelSize.width,
-                                                  dy: (delta.y - origin.y) / document.sourcePixelSize.height))
+                                                  dx: delta.x - origin.x, dy: delta.y - origin.y))
     }
 
     private func commit(_ result: (layers: [CaptureImageLayer], annotations: [CaptureAnnotation])) {

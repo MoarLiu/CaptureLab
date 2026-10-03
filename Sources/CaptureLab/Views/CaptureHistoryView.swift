@@ -188,22 +188,22 @@ private struct CaptureHistoryThumbnailView: View {
             isLoading = true
             let imageURL = url
             let worker = Task.detached(priority: .utility) {
-                Self.thumbnailData(at: imageURL)
+                Self.thumbnailImage(at: imageURL)
             }
-            let data = await withTaskCancellationHandler {
+            let image = await withTaskCancellationHandler {
                 await worker.value
             } onCancel: {
                 worker.cancel()
             }
             guard !Task.isCancelled else { return }
-            thumbnail = data.flatMap(NSImage.init(data:))
+            thumbnail = image.map { NSImage(cgImage: $0, size: .zero) }
             isLoading = false
         }
     }
 
-    /// Decode only a small preview and transfer immutable encoded data back to
+    /// Decode only a small preview and transfer immutable pixels back to
     /// the main actor. Large originals are never retained by the history grid.
-    private nonisolated static func thumbnailData(at url: URL) -> Data? {
+    private nonisolated static func thumbnailImage(at url: URL) -> CGImage? {
         guard !Task.isCancelled,
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
@@ -215,15 +215,6 @@ private struct CaptureHistoryThumbnailView: View {
               !Task.isCancelled else {
             return nil
         }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data as CFMutableData,
-            UTType.png.identifier as CFString,
-            1,
-            nil
-        ) else { return nil }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination), !Task.isCancelled else { return nil }
-        return data as Data
+        return image
     }
 }

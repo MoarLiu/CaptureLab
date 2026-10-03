@@ -47,6 +47,12 @@ include the original pixels under redactions; use Save Edited Image, Copy,
 PNG/JPEG export, PNG drag-out, or R2 upload to share only the composited result.
 Blur is a visual effect; use mosaic for redaction.
 
+Editor OCR reads the final composition, including redactions, image layers,
+crop/transforms, and background. A rendering failure does not fall back to the
+original. Changing annotations cancels pending recognition; changing blur or
+mosaic also clears existing OCR text. Arrow keys move annotations and selected
+objects by one displayed point, or ten with Shift, at every zoom level.
+
 New edited history retains editable objects. Older PNG history opens as a single
 background image. Undo history is not stored in project files; new edits after
 reopening still support undo and redo. Before replacement, editor close, or quit,
@@ -95,6 +101,8 @@ pauses. Low-confidence matches pause for correction. Finish keeps accepted
 segments; Cancel discards the session. See [scrolling compatibility and limits](docs/scrolling-capture-compatibility.md).
 The [0.9.0 development record](docs/0.9.0-development-plan.md) covers the merged
 0.9/0.10/0.11 scope and the remaining hardware/application validation limits.
+The [0.10.0 review remediation record](docs/0.10.0-review-remediation.md) evaluates
+the two third-party reports and records the subsequent fixes and validation.
 
 Retention changes preview the affected capture count before deletion and require
 a new confirmation if concurrent captures would expand that deletion set. Time
