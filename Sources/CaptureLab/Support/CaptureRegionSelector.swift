@@ -189,13 +189,14 @@ final class RegionSelectionView: NSView {
     private var start = CGPoint.zero
     private var original: CGRect?
     private var dragRatio: CGFloat?
+    private var isSelecting = false
     private var magnifier: CGImage?
     private var lastMagnifierTime = Date.distantPast
 
     init(state: CaptureRegionSelection, display: CaptureDisplay, snapshot: CGImage?, frozen: Bool) {
         self.state = state; self.display = display; self.snapshot = snapshot; self.frozen = frozen
         super.init(frame: CGRect(origin: .zero, size: display.frame.size))
-        setAccessibilityLabel(L10n.text(en: "Capture region. Drag to select, arrows to move, Return to capture, Escape to cancel.", zh: "截图区域。拖动框选，方向键移动，回车截图，Esc 取消。"))
+        setAccessibilityLabel(L10n.text(en: "Capture region. Drag and release to capture, Escape to cancel.", zh: "截图区域。拖动框选，松开鼠标截图，Esc 取消。"))
     }
     required init?(coder: NSCoder) { nil }
     override var acceptsFirstResponder: Bool { true }
@@ -208,21 +209,34 @@ final class RegionSelectionView: NSView {
     override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
     override func mouseDown(with event: NSEvent) {
         window?.makeKey(); window?.makeFirstResponder(self)
-        start = NSEvent.mouseLocation
+        start = screenPoint(for: event)
         original = state.rect.contains(start) ? state.rect : nil
         dragRatio = state.aspect
+        isSelecting = true
         if original == nil { state.setRect(CGRect(origin: start, size: .zero), updateFields: false) }
     }
     override func mouseDragged(with event: NSEvent) {
-        let point = NSEvent.mouseLocation
+        guard isSelecting else { return }
+        updateSelection(to: screenPoint(for: event))
+        updatePointer()
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard isSelecting else { return }
+        isSelecting = false
+        updateSelection(to: screenPoint(for: event))
+        state.setRect(state.rect)
+        if state.rect.hasPositiveArea { state.finish?() }
+    }
+    private func screenPoint(for event: NSEvent) -> CGPoint {
+        window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+    }
+    private func updateSelection(to point: CGPoint) {
         if let original {
             state.setRect(PreciseCaptureGeometry.moved(original, dx: point.x - start.x, dy: point.y - start.y, bounds: state.bounds))
         } else {
             state.setRect(PreciseCaptureGeometry.constrainedRect(from: start, to: point, ratio: dragRatio, bounds: state.bounds), updateFields: false)
         }
-        updatePointer()
     }
-    override func mouseUp(with event: NSEvent) { state.setRect(state.rect) }
     override func mouseMoved(with event: NSEvent) { updatePointer() }
     override func rightMouseDown(with event: NSEvent) { state.cancel?() }
     override func keyDown(with event: NSEvent) {
@@ -303,7 +317,7 @@ private struct RegionOptionsView: View {
                 Button(L10n.cancel) { state.cancel?() }.keyboardShortcut(.cancelAction)
                 Button(L10n.captureMenu) { state.finish?() }.keyboardShortcut(.defaultAction).disabled(!state.rect.hasPositiveArea)
             }
-            Text(state.error ?? L10n.text(en: "Drag inside to move · Arrows: 1 pt · Shift: 10 pt · Option: resize · Return: capture", zh: "拖动选区内部移动 · 方向键：1 点 · Shift：10 点 · Option：调整尺寸 · 回车：截图"))
+            Text(state.error ?? L10n.text(en: "Release to capture · Arrows: 1 pt · Shift: 10 pt · Option: resize · Return: capture", zh: "松开鼠标截图 · 方向键：1 点 · Shift：10 点 · Option：调整尺寸 · 回车：截图"))
                 .font(.caption).foregroundColor(state.error == nil ? .secondary : .red)
         }
         .padding(14)

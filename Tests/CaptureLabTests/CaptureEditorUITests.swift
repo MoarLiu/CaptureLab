@@ -6,6 +6,36 @@ import XCTest
 
 @MainActor
 final class CaptureEditorUITests: XCTestCase {
+    func testZoomMenuKeepsAdjacentToolbarSpaceAvailableForWindowDragging() throws {
+        _ = NSApplication.shared
+        let state = ZoomFixtureState()
+        let hosting = NSHostingView(rootView: CompactZoomFixtureView(state: state))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 220, height: 52),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.close() }
+
+        for level in CaptureZoomLevel.allCases {
+            state.zoom = level
+            drainUI()
+            hosting.layoutSubtreeIfNeeded()
+            let button = try XCTUnwrap(nativeDescendants(of: hosting).compactMap { $0 as? NSPopUpButton }.first)
+            let frame = button.convert(button.bounds, to: hosting)
+            XCTAssertLessThanOrEqual(frame.width, 56, level.title)
+            XCTAssertLessThanOrEqual(frame.height, 28, level.title)
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            let menuHit = try XCTUnwrap(hosting.hitTest(center))
+            XCTAssertTrue(menuHit === button || menuHit.isDescendant(of: button))
+            for x in [CGFloat(81), CGFloat(139)] {
+                let dragHit = try XCTUnwrap(hosting.hitTest(CGPoint(x: x, y: center.y)))
+                XCTAssertFalse(dragHit === button || dragHit.isDescendant(of: button), level.title)
+                XCTAssertTrue(dragHit.mouseDownCanMoveWindow, level.title)
+            }
+        }
+    }
+
     func testFitAndFixedZoomKeepTheSameNativeCanvasAndCommitPendingText() async throws {
         _ = NSApplication.shared
         let state = ZoomFixtureState()
@@ -269,6 +299,19 @@ private final class ZoomFixtureState: ObservableObject {
     @Published var zoom: CaptureZoomLevel = .fit
     @Published var annotations: [CaptureAnnotation] = []
     @Published var tool: CaptureTool = .select
+}
+
+private struct CompactZoomFixtureView: View {
+    @ObservedObject var state: ZoomFixtureState
+    var body: some View {
+        HStack {
+            Spacer()
+            ZoomToolbarMenu(zoomLevel: $state.zoom)
+            Spacer()
+        }
+        .frame(height: 52)
+        .background(CaptureWindowDragRegion())
+    }
 }
 
 private struct ZoomFixtureView: View {

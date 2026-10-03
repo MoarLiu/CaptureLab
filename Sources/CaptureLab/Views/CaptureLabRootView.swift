@@ -517,7 +517,7 @@ private struct DocumentToolbarStatusView: View {
     }
 }
 
-private struct ZoomToolbarMenu: View {
+struct ZoomToolbarMenu: View {
     @Binding var zoomLevel: CaptureZoomLevel
 
     var body: some View {
@@ -534,19 +534,19 @@ private struct ZoomToolbarMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Text(zoomLevel.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: 62, height: 28)
-            .background(Color.white.opacity(0.72), in: Capsule())
+            Text(zoomLevel.title)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 56, height: 28)
+                .background(Color.white.opacity(0.72), in: Capsule())
         }
         .menuStyle(.borderlessButton)
+        .font(.system(size: 12, weight: .semibold))
+        .controlSize(.small)
+        .fixedSize()
+        .frame(width: 56, height: 28)
+        .contentShape(Rectangle())
+        .clipped()
         .help(L10n.zoom)
         .layoutPriority(3)
     }

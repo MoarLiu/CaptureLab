@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.1 - 2026-10-03
+
+- Confirm region and frozen-region captures when the mouse button is released,
+  using the final release position without an extra confirmation step.
+- Copy the original screenshot before opening the editor or saving the new
+  capture to history.
+  Later annotations do not change the image already on the clipboard.
+- Keep the zoom menu compact and bound its click area so adjacent toolbar space
+  remains available for dragging the editor window.
+
+Validation: 389 tests pass without skips under strict concurrency and warnings
+as errors, including both live WindowServer fixtures. ARM64 and x86_64 Release
+builds target macOS 13. Release preparation and validation limits:
+[0.10.1 validation record](docs/0.10.1-release-validation.md).
+
+Verified release artifacts; publication approved:
+
+- `CaptureLab-0.10.1-macos-arm64.dmg`
+- SHA-256: `58fc036bc8985def33146f8a1c9e6cee344f59ab5916e77937a38f7ef0e009f8`
+- `CaptureLab-0.10.1-macos-x86_64.dmg`
+- SHA-256: `0eb33921bb0c6e8b9352c365abee8455982f89484392204ee66eb72d0fb2d6b7`
+- Each package includes matching `.dmg.sha256` and `.dmg.sig` sidecars.
+
+Uses the existing self-signed identity without notarization or hardened runtime;
+Gatekeeper may require manual approval. Physical Intel/macOS 13, mixed-display
+and Space interaction remain unverified.
+
 ## 0.10.0 - 2026-10-03
 
 - Editor OCR now reads the final rendered composition, preserves redactions,

@@ -71,7 +71,8 @@ while taking a new screenshot.
 
 Screenshot Settings (Command-comma or the menu bar) controls the post-capture
 behavior, overlay corner/size/timeout/display, and history retention. The default
-continues to copy and open the editor. Overlay and copy-only modes preserve the
+confirms a region on mouse release, copies the original image, and opens the
+editor. Overlay and copy-only modes preserve the
 current edit. Overlays keep immutable capture pixels, so switching documents or
 deleting history cannot change the image attached to their actions. Auto-close
 pauses during hovering, dragging, and capture; the menu bar can hide overlays or

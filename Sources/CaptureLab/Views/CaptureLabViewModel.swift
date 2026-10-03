@@ -630,9 +630,10 @@ final class CaptureLabViewModel: ObservableObject {
     private func receiveCapture(data: Data, mode: CaptureMode, showEditor: (() -> Void)?) {
         let options = workflowSettings.options.validated
         if options.afterCapture == .editor {
-            guard loadImage(data: data, sourceURL: nil, status: mode.completedTitle) else { return }
+            guard loadImage(data: data, sourceURL: nil, status: mode.completedTitle),
+                  let image = document?.image else { return }
+            let didCopy = copyRenderedImage(image, successStatus: mode.completedAndCopiedTitle)
             let historyError = recordCurrentCaptureInHistory()
-            let didCopy = copyRenderedImage(successStatus: mode.completedAndCopiedTitle)
             if didCopy, let historyError {
                 reportFailure(L10n.captureCopiedButHistorySaveFailed(historyError), title: L10n.historySaveFailedTitle)
             }
@@ -710,7 +711,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func requestUpdateInstallation(_ installation: @escaping () throws -> Void,
-                                   terminate: () -> Void = { NSApp.terminate(nil) }) {
+                                   terminate: @MainActor () -> Void = { NSApp.terminate(nil) }) {
         guard pendingUpdateInstallation == nil else { return }
         pendingUpdateInstallation = installation
         terminate()
@@ -1566,7 +1567,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.10.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.10.1"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

@@ -6,6 +6,28 @@ import XCTest
 
 @MainActor
 final class CaptureWorkflowTests: XCTestCase {
+    func testDefaultCaptureCopiesOriginalPixelsBeforePresentingEditor() async throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanUp() }
+        let model = try XCTUnwrap(fixture.model)
+        XCTAssertEqual(model.workflowSettings.options.afterCapture, .editor)
+        XCTAssertTrue(model.importImageData(fixture.red))
+        model.annotations = [CaptureAnnotation(kind: .mosaic, normalizedRect: CGRect(x: 0, y: 0, width: 1, height: 1))]
+        let original = try XCTUnwrap(NSImage(data: fixture.blue)?.captureLabPNGData())
+        var opened = 0
+
+        model.capture(.region) {
+            opened += 1
+            XCTAssertEqual(NSImage(pasteboard: fixture.pasteboard)?.captureLabPNGData(), original)
+            XCTAssertTrue(model.annotations.isEmpty)
+            XCTAssertEqual(model.document?.sourcePixelSize, CGSize(width: 96, height: 64))
+        }
+        await waitForCapture(model)
+        XCTAssertEqual(opened, 1)
+        model.annotations = [CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0, y: 0, width: 1, height: 1))]
+        XCTAssertEqual(NSImage(pasteboard: fixture.pasteboard)?.captureLabPNGData(), original)
+    }
+
     func testCopyOnlyCapturePreservesEditorAnnotationsAndOCR() async throws {
         let fixture = try WorkflowFixture()
         defer { fixture.cleanUp() }
