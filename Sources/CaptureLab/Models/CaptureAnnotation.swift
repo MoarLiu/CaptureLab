@@ -7,6 +7,11 @@ enum CaptureTool: String, CaseIterable, Identifiable {
     case arrow
     case line
     case rectangle
+    case ellipse
+    case filledRectangle
+    case curvedArrow
+    case spotlight
+    case blur
     case counter
     case brush
     case text
@@ -27,6 +32,16 @@ enum CaptureTool: String, CaseIterable, Identifiable {
             return L10n.toolLine
         case .rectangle:
             return L10n.toolBox
+        case .ellipse:
+            return L10n.text(en: "Ellipse", zh: "椭圆")
+        case .filledRectangle:
+            return L10n.text(en: "Filled Rectangle", zh: "实心矩形")
+        case .curvedArrow:
+            return L10n.text(en: "Curved Arrow", zh: "曲线箭头")
+        case .spotlight:
+            return L10n.text(en: "Spotlight", zh: "聚光灯")
+        case .blur:
+            return L10n.text(en: "Blur", zh: "模糊")
         case .counter:
             return L10n.toolCounter
         case .brush:
@@ -52,6 +67,16 @@ enum CaptureTool: String, CaseIterable, Identifiable {
             return "line.diagonal"
         case .rectangle:
             return "rectangle"
+        case .ellipse:
+            return "oval"
+        case .filledRectangle:
+            return "rectangle.fill"
+        case .curvedArrow:
+            return "arrow.turn.up.right"
+        case .spotlight:
+            return "flashlight.on.fill"
+        case .blur:
+            return "drop.halffull"
         case .counter:
             return "number.circle"
         case .brush:
@@ -75,6 +100,16 @@ enum CaptureTool: String, CaseIterable, Identifiable {
             return .line
         case .rectangle:
             return .rectangle
+        case .ellipse:
+            return .ellipse
+        case .filledRectangle:
+            return .filledRectangle
+        case .curvedArrow:
+            return .curvedArrow
+        case .spotlight:
+            return .spotlight
+        case .blur:
+            return .blur
         case .counter:
             return .counter
         case .brush:
@@ -108,6 +143,11 @@ struct CaptureAnnotation: Identifiable, Hashable, Codable {
         case arrow
         case line
         case rectangle
+        case ellipse
+        case filledRectangle
+        case curvedArrow
+        case spotlight
+        case blur
         case counter
         case brush
         case text
@@ -122,6 +162,16 @@ struct CaptureAnnotation: Identifiable, Hashable, Codable {
                 return L10n.toolLine
             case .rectangle:
                 return L10n.toolBox
+            case .ellipse:
+                return L10n.text(en: "Ellipse", zh: "椭圆")
+            case .filledRectangle:
+                return L10n.text(en: "Filled Rectangle", zh: "实心矩形")
+            case .curvedArrow:
+                return L10n.text(en: "Curved Arrow", zh: "曲线箭头")
+            case .spotlight:
+                return L10n.text(en: "Spotlight", zh: "聚光灯")
+            case .blur:
+                return L10n.text(en: "Blur", zh: "模糊")
             case .counter:
                 return L10n.toolCounter
             case .brush:
@@ -171,6 +221,15 @@ struct CaptureAnnotation: Identifiable, Hashable, Codable {
             normalizedRect: rect,
             normalizedPoints: [CaptureAnnotationPoint(start), CaptureAnnotationPoint(end)]
         )
+    }
+
+    /// Endpoints stay at indices 0/1; index 2 is the quadratic control handle.
+    static func curvedArrow(start: CGPoint, end: CGPoint, control: CGPoint? = nil) -> CaptureAnnotation {
+        let control = control ?? CGPoint(x: (start.x + end.x) / 2 + (end.y - start.y) * 0.25,
+                                         y: (start.y + end.y) / 2 - (end.x - start.x) * 0.25).clampedToUnit()
+        let points = [start, end, control]
+        return CaptureAnnotation(kind: .curvedArrow, normalizedRect: .bounding(points),
+                                 normalizedPoints: points.map(CaptureAnnotationPoint.init))
     }
 
     static func line(start: CGPoint, end: CGPoint) -> CaptureAnnotation {
@@ -273,12 +332,12 @@ struct CaptureAnnotation: Identifiable, Hashable, Codable {
         let adjustedDY = min(max(dy, -bounds.minY), 1 - bounds.maxY)
 
         switch kind {
-        case .arrow, .line, .brush:
+        case .arrow, .curvedArrow, .line, .brush:
             let points = normalizedPoints.map {
                 CGPoint(x: $0.x + adjustedDX, y: $0.y + adjustedDY).clampedToUnit()
             }
             return withNormalizedPoints(points)
-        case .rectangle, .counter, .text, .highlight, .mosaic:
+        case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic:
             return withNormalizedRect(normalizedRect.offsetBy(dx: adjustedDX, dy: adjustedDY))
         }
     }
@@ -286,7 +345,7 @@ struct CaptureAnnotation: Identifiable, Hashable, Codable {
     func scaledToNormalizedRect(_ targetRect: CGRect) -> CaptureAnnotation {
         let target = targetRect.clampedToUnit()
         switch kind {
-        case .arrow, .line, .brush:
+        case .arrow, .curvedArrow, .line, .brush:
             let points = normalizedPoints.map(\.cgPoint)
             let bounds = CGRect.bounding(points)
             guard !points.isEmpty else {
@@ -302,17 +361,17 @@ struct CaptureAnnotation: Identifiable, Hashable, Codable {
                 .clampedToUnit()
             }
             return withNormalizedPoints(scaled)
-        case .rectangle, .counter, .text, .highlight, .mosaic:
+        case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic:
             return withNormalizedRect(target)
         }
     }
 
     var normalizedBounds: CGRect {
         switch kind {
-        case .arrow, .line, .brush:
+        case .arrow, .curvedArrow, .line, .brush:
             let points = normalizedPoints.map(\.cgPoint)
             return points.isEmpty ? normalizedRect : CGRect.bounding(points)
-        case .rectangle, .counter, .text, .highlight, .mosaic:
+        case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic:
             return normalizedRect
         }
     }

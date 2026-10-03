@@ -6,6 +6,77 @@ import XCTest
 
 @MainActor
 final class CaptureEditorUITests: XCTestCase {
+    func testMergedEditorAndNewPanelsFitTheirWindows() async throws {
+        _ = NSApplication.shared
+        let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureMergedUI-\(UUID().uuidString)")
+        let defaultsName = "CaptureMergedUI.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsName))
+        defer {
+            defaults.removePersistentDomain(forName: defaultsName)
+            try? FileManager.default.removeItem(at: fixtureRoot)
+        }
+        let environment = ["HOME": fixtureRoot.path]
+        let model = CaptureLabViewModel(
+            r2SettingsStore: CloudflareR2SettingsStore(environment: environment, secretStore: EditorUITestSecretStore()),
+            historyStore: CaptureHistoryStore(environment: environment),
+            failurePresentationOperation: { _, message in XCTFail(message) },
+            pasteboard: NSPasteboard(name: .init(defaultsName)), workflowSettings: CaptureWorkflowSettings(defaults: defaults))
+        let source = try fixtureImage()
+        XCTAssertTrue(model.importImageData(try XCTUnwrap(source.captureLabPNGData())))
+        let layer = CaptureImageLayer(name: "Sample.png", pngData: try XCTUnwrap(source.captureLabPNGData()),
+            normalizedRect: CGRect(x: 0.52, y: 0.45, width: 0.32, height: 0.38), rotationDegrees: 12, zIndex: 0)
+        let appearance = CaptureAnnotationAppearance(color: CaptureAnnotationColor(.white), lineWidth: 3, fontSize: 24,
+            fontFamily: "Helvetica", fontWeight: .bold, textAlignment: .left,
+            textBackgroundColor: CaptureAnnotationColor(.black), textBorderColor: CaptureAnnotationColor(.white))
+        model.commitObjects(layers: [layer], annotations: [
+            .init(kind: .text, normalizedRect: CGRect(x: 0.09, y: 0.12, width: 0.8, height: 0.2), text: "CaptureLab 0.9.0", appearance: appearance),
+            .curvedArrow(start: CGPoint(x: 0.18, y: 0.67), end: CGPoint(x: 0.65, y: 0.58), control: CGPoint(x: 0.32, y: 0.35))
+        ])
+        model.selectedObjects = [.image(layer.id)]
+        model.isEditingObjects = true
+        let root = CaptureLabRootView(model: model, shortcutStore: CaptureShortcutStore(defaults: defaults), showHistory: {})
+        try await renderPanel(root, size: CGSize(width: 1080, height: 620), name: "objects")
+        try await renderPanel(CaptureLayersView(document: XCTUnwrap(model.document), annotations: model.annotations,
+            selectedObjects: model.selectedObjects, onSelectionChanged: { model.selectedObjects = $0 },
+            onCommit: { model.commitObjects(layers: $0, annotations: $1) }, addImages: {})
+            .frame(width: 340, height: 480), size: CGSize(width: 340, height: 480), name: "layers")
+        var presentation = CapturePresentation()
+        presentation.background = .gradient
+        presentation.padding = 32
+        presentation.cornerRadius = 20
+        presentation.shadowOpacity = 0.4
+        presentation.aspect = .sixteenNine
+        model.applyPresentation(presentation)
+        try await renderPanel(root, size: CGSize(width: 1080, height: 620), name: "output")
+        try await renderPanel(CaptureAdvancedAnnotationStyleView(appearance: .constant(appearance), tool: .text)
+            .defaultAppStorage(defaults), size: CGSize(width: 372, height: 640), name: "text-style")
+        try await renderPanel(CapturePresentationView(presentation: .constant(presentation), sourceSize: source.captureLabPixelSize,
+            sourceImage: source, onApply: { _ in }), size: CGSize(width: 690, height: 660), name: "background")
+        let rendered = try XCTUnwrap(model.renderedSnapshot()?.image)
+        try await renderPanel(CaptureExportView(image: rendered), size: CGSize(width: 670, height: 460), name: "export")
+    }
+
+    private func renderPanel<V: View>(_ view: V, size: CGSize, name: String) async throws {
+        let hosting = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        CaptureLabAppDelegate.allowNextMainWindowPresentation()
+        window.contentView = hosting
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await Task.sleep(nanoseconds: 600_000_000)
+        hosting.layoutSubtreeIfNeeded()
+        window.display()
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, size.width, name)
+        XCTAssertLessThanOrEqual(hosting.fittingSize.height, size.height, name)
+        if let directory = ProcessInfo.processInfo.environment["CAPTURELAB_MERGED_UI_OUTPUT"] {
+            let folder = URL(fileURLWithPath: directory)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try saveFixtureWindowSnapshot(window, to: folder.appendingPathComponent("\(name).png"))
+        }
+    }
+
     func testEditorFitsMinimumWindowWidthAndEscapeCancelsCropWithoutClosingWindow() throws {
         _ = NSApplication.shared
         let home = FileManager.default.temporaryDirectory

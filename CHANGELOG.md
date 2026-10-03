@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.9.0 - 2026-10-03
+
+This version combines the previously planned 0.9.0, 0.10.0, and 0.11.0 work.
+
+- Added ellipses, filled rectangles, curved arrows with editable control points,
+  spotlight, adjustable blur, arrow/shape styles, smoothed brush strokes, and
+  text-region alignment for highlights. Added text styles, presets, and favorite colors.
+- Added independent image layers, multi-image paste/drop, multi-selection,
+  movement, resize/rotation, stacking, duplication, alignment, and spacing tools.
+- Added backgrounds, padding, rounded corners, shadows, aspect ratios, automatic
+  margin balancing, and persistent personal layout presets.
+- Added PNG/JPEG export with dimensions, JPEG quality and background color,
+  asynchronous encoded-size preview, and reusable export settings.
+- Added vertical/horizontal manual scrolling capture with fixed edge bands,
+  bounded preview, uncertain-seam correction, undo-last-segment, and cancellation.
+- Upgraded projects to format 2 while preserving format-1 reading. All new
+  objects and layouts retain editability through history, save/reopen, and undo.
+  Ordinary output uses one consistent composition; R2 still uploads PNG.
+- Fixed boundary rotation handles, copied-layer stacking, degenerate curved-arrow
+  direction, corrupted embedded resources, aspect-ratio reuse, stale previews,
+  layout size limits, legacy text-size compatibility, and scrolling-selection cancellation.
+
+Validation: 365 tests pass without skips under strict concurrency and warnings as
+errors, including both live WindowServer fixtures. ARM64 and x86_64 Release builds
+target macOS 13. Validation limits: [0.9.0 development record](docs/0.9.0-development-plan.md)
+and [scrolling compatibility](docs/scrolling-capture-compatibility.md).
+Both DMGs have passed mounted bundle, signature, update-signature, architecture,
+privacy, and checksum verification. The ARM installation passes direct and
+LaunchServices startup checks; the latter has an empty startup log. Release
+publication has been approved.
+
+Artifacts:
+
+- `CaptureLab-0.9.0-macos-arm64.dmg`
+- SHA-256: `0f32bd2da8e3339dfd8d93dc49604de90cb7c851d06eff92ab6438f1090be290`
+- `CaptureLab-0.9.0-macos-x86_64.dmg`
+- SHA-256: `d179596f6c68a033920b5e5d3cc890c41872248658d0d2c547a93373041e20e0`
+- Each package includes matching `.dmg.sha256` and `.dmg.sig` sidecars.
+
+Uses the existing self-signed identity, without notarization or hardened runtime;
+Gatekeeper may require manual approval. Physical Intel/macOS 13, mixed-display
+and Space interaction, and third-party scrolling-application compatibility remain
+unverified. Editable projects contain original pixels underneath redactions.
+
 ## 0.8.0 - 2026-10-02
 
 - Added self-contained `.capturelab` projects with editable source images,

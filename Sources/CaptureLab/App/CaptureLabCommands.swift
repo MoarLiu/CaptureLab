@@ -85,6 +85,9 @@ struct CaptureLabCommands: Commands {
         }
 
         CommandGroup(replacing: .saveItem) {
+            Button(L10n.text(en: "Export PNG / JPEG…", zh: "导出 PNG / JPEG…"), action: model.prepareExport)
+                .keyboardShortcut("e", modifiers: .command).disabled(!model.hasImage)
+
             Button(L10n.text(en: "Save Editable Project…", zh: "保存可编辑项目…"), action: model.saveProject)
                 .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.hasImage)
 
@@ -135,6 +138,7 @@ struct CaptureLabCommands: Commands {
 
         CommandMenu(L10n.captureMenu) {
             PrecisionCaptureMenu(model: model)
+            ScrollingCaptureMenu(model: model)
             Divider()
             Button(L10n.captureRegion) {
                 model.capture(.region, onSuccess: showMainWindow)
@@ -189,6 +193,15 @@ struct CaptureLabCommands: Commands {
         }
 
         CommandMenu(L10n.toolsMenu) {
+            Button(L10n.text(en: "Add Images to Canvas…", zh: "添加图片到画布…"), action: model.addImages)
+                .disabled(model.isCapturing)
+            Button(L10n.text(en: "Select Multiple Objects", zh: "选择多个对象")) {
+                CaptureEditingSession.commitPendingTextEdits()
+                model.isEditingObjects = true
+                model.showsOutputPreview = false
+            }.disabled(!model.hasImage)
+            Divider()
+
             ForEach(CaptureTool.allCases) { tool in
                 Button {
                     model.selectedTool = tool
@@ -233,6 +246,7 @@ struct CaptureLabMenuBarView: View {
 
     var body: some View {
         PrecisionCaptureMenu(model: model)
+        ScrollingCaptureMenu(model: model)
         Divider()
         Button(L10n.workflowSettings, action: showWorkflowSettings)
         CaptureOverlayMenu(controller: model.overlayController)
@@ -428,6 +442,11 @@ private extension CaptureTool {
             return "9"
         case .crop:
             return "k"
+        case .ellipse: return "l"
+        case .filledRectangle: return "f"
+        case .curvedArrow: return "j"
+        case .spotlight: return "t"
+        case .blur: return "b"
         }
     }
 }
@@ -447,5 +466,15 @@ private struct CapturePinMenu: View {
     var body: some View {
         Button(L10n.pinUnlockAll, action: controller.unlockAll).disabled(controller.windows.isEmpty)
         Button(L10n.pinCloseAll, action: controller.closeAll).disabled(controller.windows.isEmpty)
+    }
+}
+
+struct ScrollingCaptureMenu: View {
+    @ObservedObject var model: CaptureLabViewModel
+    var body: some View {
+        Menu(L10n.text(en: "Scrolling Capture", zh: "滚动长截图")) {
+            Button(L10n.text(en: "Vertical…", zh: "纵向…")) { model.captureScrolling(.vertical) }
+            Button(L10n.text(en: "Horizontal…", zh: "横向…")) { model.captureScrolling(.horizontal) }
+        }.disabled(model.isCapturing)
     }
 }

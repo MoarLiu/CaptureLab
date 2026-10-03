@@ -43,6 +43,12 @@ struct CaptureDocumentGeometry: Codable, Equatable {
 }
 
 extension CaptureDocument {
+    var visibleSourceRect: CGRect {
+        let rect = CGRect(origin: .zero, size: canvasSize).applying(geometry.transform.inverted())
+        return CGRect(x: rect.minX / sourcePixelSize.width, y: rect.minY / sourcePixelSize.height,
+                      width: rect.width / sourcePixelSize.width, height: rect.height / sourcePixelSize.height).clampedToUnit()
+    }
+
     enum Adjustment { case rotateClockwise, flipHorizontal, flipVertical }
 
     func adjusting(_ adjustment: Adjustment) -> CaptureDocument {

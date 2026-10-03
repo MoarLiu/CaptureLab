@@ -5,6 +5,7 @@ struct CaptureCanvasView: View {
     @Binding var annotations: [CaptureAnnotation]
     @Binding var selectedTool: CaptureTool
     @Binding var zoomLevel: CaptureZoomLevel
+    var highlightTextRegions: [CGRect] = []
     var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
     var selectedAnnotationID: UUID?
     var cropSelection: Binding<CGRect?> = .constant(nil)
@@ -48,6 +49,7 @@ struct CaptureCanvasView: View {
             annotations: $annotations,
             selectedTool: $selectedTool,
             zoomLevel: $zoomLevel,
+            highlightTextRegions: highlightTextRegions,
             annotationAppearance: annotationAppearance,
             selectedAnnotationID: selectedAnnotationID,
             cropSelection: cropSelection,

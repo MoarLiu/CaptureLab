@@ -23,7 +23,20 @@ struct CaptureAnnotationAppearance: Hashable, Codable {
     var lineWidth: CGFloat?
     var fontSize: CGFloat?
 
-    static let editorDefault = CaptureAnnotationAppearance(lineWidth: 4, fontSize: 24)
+    var arrowStyle: CaptureArrowStyle?
+    var shapeFill: CaptureShapeFill?
+    var fillColor: CaptureAnnotationColor?
+    var fontFamily: String?
+    var fontWeight: CaptureFontWeight?
+    var textAlignment: CaptureTextAlignment?
+    var textBackgroundColor: CaptureAnnotationColor?
+    var textBorderColor: CaptureAnnotationColor?
+    var blurRadius: CGFloat?
+    var spotlightOpacity: CGFloat?
+    var brushSmoothing: CGFloat?
+    var highlightTextAlignment: Bool?
+
+    static let editorDefault = CaptureAnnotationAppearance(lineWidth: 4, fontSize: 24, brushSmoothing: 0.65)
 }
 
 extension CaptureAnnotation {
@@ -33,8 +46,7 @@ extension CaptureAnnotation {
         guard kind == .text || kind == .counter,
               let fontSize = appearance.fontSize, fontSize.isFinite, fontSize > 0,
               pixelSize.width > 0, pixelSize.height > 0 else { return self }
-        let weight: NSFont.Weight = kind == .counter ? .bold : .semibold
-        let font = NSFont.systemFont(ofSize: fontSize, weight: weight)
+        let font = kind == .counter ? NSFont.systemFont(ofSize: fontSize, weight: .bold) : appearance.textFont(size: fontSize)
         let value = text.isEmpty ? (kind == .counter ? "1" : L10n.defaultAnnotationText) : text
         let measured = (value as NSString).size(withAttributes: [.font: font])
         var required = CGSize(width: measured.width + 8, height: max(measured.height, fontSize * 1.25) + 4)

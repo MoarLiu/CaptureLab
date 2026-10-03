@@ -7,6 +7,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
     @Binding var selectedTool: CaptureTool
     @Binding var zoomLevel: CaptureZoomLevel
     var editingSession: CaptureEditingSession = .shared
+    var highlightTextRegions: [CGRect] = []
     var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
     var selectedAnnotationID: UUID?
     var cropSelection: Binding<CGRect?> = .constant(nil)
@@ -66,6 +67,7 @@ struct CaptureAnnotationCanvasView: NSViewRepresentable {
 
     private func configureInteractions(_ view: CaptureAnnotationNSCanvasView) {
         view.annotationAppearance = annotationAppearance
+        view.highlightTextRegions = highlightTextRegions
         view.synchronizeSelection(selectedAnnotationID)
         view.cropSelection = cropSelection.wrappedValue
         view.cropPreset = cropPreset
@@ -139,6 +141,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             if !isSynchronizingSelection, oldValue != selectedAnnotationID { onSelectionChanged?(selectedAnnotationID) }
         }
     }
+    var highlightTextRegions: [CGRect] = []
     var annotationAppearance: CaptureAnnotationAppearance = .editorDefault
     var cropSelection: CGRect? { didSet { needsDisplay = true } }
     var cropPreset: CaptureCropPreset = .free
@@ -237,6 +240,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
         let imageRect = imageDisplayRect(for: document.image.size)
         let usesGeometry = document.geometry != CaptureDocumentGeometry()
+            || annotations.contains { $0.kind == .blur || $0.kind == .mosaic }
         let visibleAnnotations = annotations.filter { $0.id != editingTextAnnotationID }
         if usesGeometry {
             if transformedPreview?.id != document.id || transformedPreview?.annotations != visibleAnnotations {
@@ -261,6 +265,9 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         if let draft = draftAnnotation(in: imageRect) {
             var styledDraft = draft
             styledDraft.appearance = annotationAppearance
+            if styledDraft.kind == .highlight, annotationAppearance.highlightTextAlignment == true {
+                styledDraft = styledDraft.withNormalizedRect(CaptureHighlightAlignment.alignedRect(styledDraft.normalizedRect, textRegions: highlightTextRegions))
+            }
             styledDraft = styledDraft.fittingFontBounds(in: document.sourcePixelSize)
             draw(styledDraft, imageRect: imageRect, document: document, isDraft: true)
         }
@@ -343,7 +350,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         switch kind {
         case .brush:
             interaction = .brushing(points: [CaptureGeometry.clamped(point, to: imageRect)])
-        case .arrow, .line, .rectangle, .counter, .text, .highlight, .mosaic:
+        case .arrow, .curvedArrow, .line, .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic:
             let clamped = CaptureGeometry.clamped(point, to: imageRect)
             interaction = .creating(kind: kind, start: clamped, current: clamped)
         }
@@ -395,7 +402,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         case .movingArrowPoint(let id, let original, let pointKind, let start):
             let dx = (point.x - start.x) / max(imageRect.width, 1)
             let dy = (point.y - start.y) / max(imageRect.height, 1)
-            let index = pointKind == .start ? 0 : 1
+            let index = pointKind.index
             guard original.normalizedPoints.indices.contains(index) else {
                 return
             }
@@ -455,6 +462,17 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             needsDisplay = true
         case "\u{7F}":
             deleteSelectedAnnotation()
+        case "\u{F700}", "\u{F701}", "\u{F702}", "\u{F703}":
+            guard let selected = selectedAnnotation, let document else { super.keyDown(with: event); return }
+            let amount: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+            let key = event.charactersIgnoringModifiers
+            let viewDelta = CGPoint(x: key == "\u{F702}" ? -amount : key == "\u{F703}" ? amount : 0,
+                                    y: key == "\u{F700}" ? -amount : key == "\u{F701}" ? amount : 0)
+            let inverse = document.geometry.transform.inverted()
+            let delta = viewDelta.applying(CGAffineTransform(a: inverse.a, b: inverse.b, c: inverse.c, d: inverse.d, tx: 0, ty: 0))
+            replaceAnnotation(selected.translatedBy(dx: delta.x / document.sourcePixelSize.width,
+                                                     dy: delta.y / document.sourcePixelSize.height), id: selected.id)
+            needsDisplay = true
         default:
             super.keyDown(with: event)
         }
@@ -525,13 +543,13 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         current: CGPoint,
         imageRect: CGRect
     ) {
-        if kind == .arrow || kind == .line {
+        if kind == .arrow || kind == .curvedArrow || kind == .line {
             guard hypot(current.x - start.x, current.y - start.y) >= 8 else {
                 return
             }
             let normalizedStart = CaptureGeometry.normalizedPoint(from: start, in: imageRect)
             let normalizedEnd = CaptureGeometry.normalizedPoint(from: current, in: imageRect)
-            commit(kind == .arrow
+            commit(kind == .curvedArrow ? .curvedArrow(start: normalizedStart, end: normalizedEnd) : kind == .arrow
                 ? .arrow(start: normalizedStart, end: normalizedEnd)
                 : .line(start: normalizedStart, end: normalizedEnd)
             )
@@ -545,7 +563,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             height: abs(current.y - start.y)
         )
         switch kind {
-        case .rectangle, .highlight, .mosaic:
+        case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .highlight, .mosaic:
             let normalized = CaptureGeometry.normalizedRect(from: displayRect, in: imageRect)
             commit(CaptureAnnotation(kind: kind, normalizedRect: normalized))
         case .counter:
@@ -559,7 +577,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             if commit(annotation) {
                 beginEditingText(annotationID: annotation.id)
             }
-        case .arrow, .line, .brush:
+        case .arrow, .curvedArrow, .line, .brush:
             return
         }
     }
@@ -574,6 +592,9 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
         var styled = annotation
         styled.appearance = annotationAppearance
+        if styled.kind == .highlight, annotationAppearance.highlightTextAlignment == true {
+            styled = styled.withNormalizedRect(CaptureHighlightAlignment.alignedRect(styled.normalizedRect, textRegions: highlightTextRegions))
+        }
         if let document { styled = styled.fittingFontBounds(in: document.sourcePixelSize) }
         annotations.append(styled)
         onAnnotationsChanged?(annotations)
@@ -612,10 +633,10 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
         switch interaction {
         case .creating(let kind, let start, let current):
-            if kind == .arrow || kind == .line {
+            if kind == .arrow || kind == .curvedArrow || kind == .line {
                 let normalizedStart = CaptureGeometry.normalizedPoint(from: start, in: imageRect)
                 let normalizedEnd = CaptureGeometry.normalizedPoint(from: current, in: imageRect)
-                return kind == .arrow
+                return kind == .curvedArrow ? .curvedArrow(start: normalizedStart, end: normalizedEnd) : kind == .arrow
                     ? .arrow(start: normalizedStart, end: normalizedEnd)
                     : .line(start: normalizedStart, end: normalizedEnd)
             }
@@ -708,16 +729,17 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                 return false
             }
             switch annotation.kind {
-            case .arrow, .line:
+            case .arrow, .curvedArrow, .line:
                 let points = annotation.points(in: imageRect)
                 guard points.count >= 2 else { return false }
-                return distance(from: point, toSegmentFrom: points[0], to: points[1]) <= 10
+                let line = annotation.kind == .curvedArrow ? CaptureAnnotationPaths.curvePoints(points) : Array(points.prefix(2))
+                return zip(line, line.dropFirst()).contains { distance(from: point, toSegmentFrom: $0, to: $1) <= 10 }
             case .brush:
                 let points = annotation.points(in: imageRect)
                 return zip(points, points.dropFirst()).contains { start, end in
                     distance(from: point, toSegmentFrom: start, to: end) <= 10
                 }
-            case .rectangle, .counter, .text, .highlight, .mosaic:
+            case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic:
                 return annotation.rect(in: imageRect).insetBy(dx: -8, dy: -8).contains(point)
             }
         }
@@ -729,13 +751,14 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         }
 
         switch selected.kind {
-        case .arrow, .line:
+        case .arrow, .curvedArrow, .line:
             let points = selected.points(in: imageRect)
             guard points.count >= 2 else {
                 return nil
             }
             for arrowPoint in ArrowControlPoint.allCases {
-                let displayPoint = arrowPoint == .start ? points[0] : points[1]
+                guard points.indices.contains(arrowPoint.index) else { continue }
+                let displayPoint = points[arrowPoint.index]
                 if handleRect(center: displayPoint, size: 18).contains(point) {
                     return HandleHit(interaction: .movingArrowPoint(
                         id: selected.id,
@@ -745,7 +768,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
                     ))
                 }
             }
-        case .rectangle, .counter, .text, .highlight, .mosaic, .brush:
+        case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic, .brush:
             let rect = selected.rect(in: imageRect).expandedToMinimumSize(width: 18, height: 18)
             for handle in ResizeHandle.allCases {
                 if handleRect(center: handle.position(in: rect), size: 18).contains(point) {
@@ -771,18 +794,24 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let alpha: CGFloat = isDraft ? 0.68 : 1
         let style = annotationStyle(for: document, imageRect: imageRect, appearance: annotation.appearance)
         switch annotation.kind {
-        case .arrow:
-            drawArrow(points: annotation.points(in: imageRect), style: style, alpha: alpha)
+        case .arrow, .curvedArrow:
+            CaptureAnnotationPaths.drawArrow(points: annotation.points(in: imageRect), curved: annotation.kind == .curvedArrow, style: style, alpha: alpha)
         case .line:
             drawLine(points: annotation.points(in: imageRect), style: style, alpha: alpha)
         case .brush:
             drawBrush(points: annotation.points(in: imageRect), style: style, alpha: alpha)
-        case .rectangle:
+        case .rectangle, .ellipse, .filledRectangle:
+            CaptureAnnotationPaths.drawShape(rect: annotation.rect(in: imageRect), kind: annotation.kind, style: style, alpha: alpha)
+        case .spotlight:
+            CaptureAnnotationPaths.drawSpotlight(rect: annotation.rect(in: imageRect), imageRect: imageRect, style: style, alpha: alpha)
+        case .blur:
             let rect = annotation.rect(in: imageRect)
-            style.color.withAlphaComponent(alpha).setStroke()
-            let path = NSBezierPath(rect: rect)
-            path.lineWidth = style.lineWidth
-            path.stroke()
+            if let composed = document.image.renderedWithCaptureLabAnnotations(annotations.filter { $0.id != annotation.id }),
+               let source = composed.captureLabCGImage(),
+               let blurred = CaptureBlur.image(from: source, normalizedRect: annotation.normalizedRect, radius: annotation.appearance.blurRadius ?? 12) {
+                NSImage(cgImage: blurred, size: CGSize(width: blurred.width, height: blurred.height))
+                    .draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            } else { NSColor.black.setFill(); NSBezierPath(rect: rect).fill() }
         case .counter:
             drawCounter(annotation, imageRect: imageRect, style: style, alpha: alpha)
         case .text:
@@ -791,12 +820,16 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             drawHighlight(annotation, imageRect: imageRect, style: style, alpha: alpha)
         case .mosaic:
             let rect = annotation.rect(in: imageRect)
-            drawPixelatedRegion(
-                annotation: annotation,
-                rect: rect,
-                document: document,
-                shouldCache: !isDraft
-            )
+            if isDraft, !annotations.isEmpty {
+                if let composed = document.image.renderedWithCaptureLabAnnotations(annotations),
+                   let source = composed.captureLabCGImage(),
+                   let pixels = CapturePixelation.pixelatedImage(from: source, normalizedRect: annotation.normalizedRect) {
+                    NSImage(cgImage: pixels, size: CGSize(width: pixels.width, height: pixels.height))
+                        .draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                } else { NSColor.black.setFill(); NSBezierPath(rect: rect).fill() }
+            } else {
+                drawPixelatedRegion(annotation: annotation, rect: rect, document: document, shouldCache: !isDraft)
+            }
         }
     }
 
@@ -806,22 +839,8 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         style: CaptureAnnotationStyle,
         alpha: CGFloat
     ) {
-        let rect = annotation.rect(in: imageRect)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        paragraph.lineBreakMode = .byTruncatingTail
-        let fontSize = style.textFontSize(for: rect)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: style.color.withAlphaComponent(alpha),
-            .paragraphStyle: paragraph
-        ]
-        let text = annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text
-        let textRect = rect.insetBy(
-            dx: style.textInset,
-            dy: max(0, (rect.height - fontSize * 1.25) / 2)
-        )
-        (text as NSString).draw(in: textRect, withAttributes: attributes)
+        CaptureAnnotationPaths.drawText(annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text,
+                                        rect: annotation.rect(in: imageRect), style: style, alpha: alpha)
     }
 
     private func drawCounter(
@@ -892,15 +911,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let rect = annotation.rect(in: imageRect).applying(sourceViewTransform).expandedToMinimumSize(width: 120, height: 34)
         let field = NSTextField(frame: rect)
         field.stringValue = annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text
-        field.font = NSFont.systemFont(
-            ofSize: style.textFontSize(for: annotationRect),
-            weight: .semibold
-        )
+        field.font = annotation.appearance.textFont(size: style.textFontSize(for: annotationRect))
         field.textColor = style.color
-        field.alignment = .center
-        field.isBordered = false
-        field.drawsBackground = false
-        field.backgroundColor = .clear
+        field.alignment = annotation.appearance.textAlignment?.nsAlignment ?? .center
+        field.isBordered = annotation.appearance.textBorderColor != nil
+        field.drawsBackground = annotation.appearance.textBackgroundColor != nil
+        field.backgroundColor = annotation.appearance.textBackgroundColor?.nsColor ?? .clear
         field.focusRingType = .none
         field.delegate = self
         field.isEditable = true
@@ -961,40 +977,6 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         commitActiveTextEdit()
     }
 
-    private func drawArrow(
-        points: [CGPoint],
-        style: CaptureAnnotationStyle,
-        alpha: CGFloat
-    ) {
-        guard points.count >= 2 else {
-            return
-        }
-        let start = points[0]
-        let end = points[1]
-        let path = NSBezierPath()
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.lineWidth = style.lineWidth
-        path.move(to: start)
-        path.line(to: end)
-
-        let angle = atan2(end.y - start.y, end.x - start.x)
-        let left = CGPoint(
-            x: end.x - style.arrowHeadLength * cos(angle - style.arrowHeadAngle),
-            y: end.y - style.arrowHeadLength * sin(angle - style.arrowHeadAngle)
-        )
-        let right = CGPoint(
-            x: end.x - style.arrowHeadLength * cos(angle + style.arrowHeadAngle),
-            y: end.y - style.arrowHeadLength * sin(angle + style.arrowHeadAngle)
-        )
-        path.move(to: left)
-        path.line(to: end)
-        path.line(to: right)
-
-        style.color.withAlphaComponent(alpha).setStroke()
-        path.stroke()
-    }
-
     private func drawLine(
         points: [CGPoint],
         style: CaptureAnnotationStyle,
@@ -1019,17 +1001,13 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         style: CaptureAnnotationStyle,
         alpha: CGFloat
     ) {
-        guard let first = points.first, points.count >= 2 else {
+        guard points.count >= 2 else {
             return
         }
-        let path = NSBezierPath()
+        let path = CaptureAnnotationPaths.brush(points, smoothing: style.appearance.brushSmoothing ?? 0)
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         path.lineWidth = style.brushWidth
-        path.move(to: first)
-        for point in points.dropFirst() {
-            path.line(to: point)
-        }
         style.color.withAlphaComponent(alpha).setStroke()
         path.stroke()
     }
@@ -1061,7 +1039,7 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
 
     private func drawSelection(for annotation: CaptureAnnotation, imageRect: CGRect) {
         switch annotation.kind {
-        case .arrow, .line:
+        case .arrow, .curvedArrow, .line:
             let points = annotation.points(in: imageRect)
             guard points.count >= 2 else { return }
             let path = NSBezierPath()
@@ -1073,7 +1051,12 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             path.stroke()
             drawHandle(center: points[0])
             drawHandle(center: points[1])
-        case .rectangle, .counter, .text, .highlight, .mosaic, .brush:
+            if annotation.kind == .curvedArrow, points.count >= 3 {
+                let guides = NSBezierPath(); guides.move(to: points[0]); guides.line(to: points[2]); guides.line(to: points[1])
+                guides.lineWidth = 1; guides.setLineDash([2, 3], count: 2, phase: 0); guides.stroke()
+                drawHandle(center: points[2])
+            }
+        case .rectangle, .ellipse, .filledRectangle, .spotlight, .blur, .counter, .text, .highlight, .mosaic, .brush:
             let rect = annotation.rect(in: imageRect).expandedToMinimumSize(width: 18, height: 18)
             let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
             path.lineWidth = 1.2
@@ -1390,6 +1373,8 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
         let pixelSize = document.sourcePixelSize
         return [
             document.id.uuidString,
+            "\(ObjectIdentifier(document.image))",
+            "\(document.geometry)",
             document.sourceURL?.path ?? "capture",
             "\(document.createdAt.timeIntervalSinceReferenceDate)",
             "\(Int(pixelSize.width))x\(Int(pixelSize.height))"
@@ -1494,7 +1479,9 @@ private enum ResizeHandle: String, CaseIterable, Identifiable, Equatable {
 private enum ArrowControlPoint: String, CaseIterable, Identifiable, Equatable {
     case start
     case end
+    case control
 
+    var index: Int { switch self { case .start: return 0; case .end: return 1; case .control: return 2 } }
     var id: String { rawValue }
 }
 

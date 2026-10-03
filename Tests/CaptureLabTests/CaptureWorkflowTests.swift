@@ -115,7 +115,7 @@ final class CaptureWorkflowTests: XCTestCase {
         XCTAssertEqual(fixture.model.document?.id, id)
     }
 
-    func testPNGDropAndFileDropImportPixels() async throws {
+    func testPNGDropOpensCanvasAndFileDropAddsEditableImageLayer() async throws {
         let fixture = try WorkflowFixture()
         defer { fixture.cleanUp() }
         let provider = NSItemProvider(item: fixture.blue as NSData, typeIdentifier: UTType.png.identifier)
@@ -129,7 +129,14 @@ final class CaptureWorkflowTests: XCTestCase {
         XCTAssertTrue(fixture.model.importDroppedImage([fileProvider]))
         for _ in 0..<50 where fixture.model.document?.id == id { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertNotEqual(fixture.model.document?.id, id)
-        XCTAssertEqual(fixture.model.document?.pixelSize, CGSize(width: 80, height: 50))
+        XCTAssertEqual(fixture.model.document?.pixelSize, CGSize(width: 96, height: 64))
+        XCTAssertEqual(fixture.model.document?.imageLayers.count, 1)
+        XCTAssertEqual(fixture.model.document?.imageLayers.first?.pixelSize, CGSize(width: 80, height: 50))
+        fixture.model.undoAnnotation()
+        XCTAssertTrue(fixture.model.document?.imageLayers.isEmpty == true)
+        XCTAssertEqual(fixture.model.document?.id, id)
+        fixture.model.redoAnnotation()
+        XCTAssertEqual(fixture.model.document?.imageLayers.count, 1)
     }
 
     func testPNGPromiseRetainsPayloadAndReportsDestinationFailure() throws {
@@ -216,7 +223,13 @@ final class CaptureWorkflowTests: XCTestCase {
         try await Task.sleep(nanoseconds: 5_100_000_000)
         XCTAssertEqual(controller.entries.count, 1)
         controller.isCapturing = false
-        try await Task.sleep(nanoseconds: 5_100_000_000)
+        // This is a timer/state test. A real pointer resting over the newly
+        // shown panel must not turn its SwiftUI onHover callback into a pause.
+        controller.window?.contentView = nil
+        controller.isHovering = false
+        for _ in 0..<140 where !controller.entries.isEmpty {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
         XCTAssertTrue(controller.entries.isEmpty)
         XCTAssertNotNil(controller.lastClosed)
     }

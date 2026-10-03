@@ -12,26 +12,40 @@ Current features:
 - full thumbnail browser for all retained captures, with refresh, open, copy,
   save as, Cloudflare R2 upload, pin, and confirmed deletion actions
 - image preview with Fit, 50%, 100%, and 200% zoom
-- arrow, line, rectangle, counter, brush, text, text highlight, and mosaic markup
+- arrow, curved arrow, line, rectangle, ellipse, filled rectangle, spotlight,
+  adjustable blur, counter, smoothed brush, text, text highlight, and mosaic markup
+- arrow/shape styles, text font/weight/alignment/background/border, reusable styles,
+  favorite colors, and optional local OCR alignment for highlights
+- independent image layers with move/resize/rotate, stacking, multi-selection,
+  group movement, duplication, alignment, equal spacing, and horizontal/vertical arrangement
 - annotation color, line width, and font size controls for new and selected markup
 - editable `.capturelab` projects with open/save, history restoration, and recovery before closing or replacing the document
 - non-destructive crops with aspect-ratio presets, exact canvas-pixel dimensions, selection moving/resizing, and edge snapping
 - output resizing by dimensions or percentage, aspect-ratio locking, 90-degree rotation, and horizontal/vertical flips
-- undo and redo for annotations, crops, rotations, flips, and output dimensions
+- undo and redo for annotations, image layers, background/layout, crops, rotations,
+  flips, and output dimensions
+- transparent/solid/gradient/built-in/custom backgrounds, padding, rounded corners,
+  shadows, output ratios, automatic margin balancing, and personal presets
+- vertical and horizontal manual scrolling capture with thumbnail preview,
+  fixed edge bands, uncertain-seam correction, undo-last-segment, and resource limits
 - floating pinned screenshots with resize, opacity, click-through locking, and arrow-key movement
 - optional quick-access overlay with per-capture copy, save, edit, pin, upload, and drag actions
 - image paste and drag-in import, plus PNG file-promise drag-out from editor, history, and overlay
-- copy/save rendered PNG output
+- copy rendered PNG output; export PNG or JPEG with size, quality, explicit JPEG
+  background color, asynchronous file-size preview, and recent export settings
 - optional Cloudflare R2 upload for rendered screenshots
 - optional local Vision OCR tool with editable OCR text and copy support
 - direct text selection and copy, multiple QR-code results, and recognition
   languages selected from those supported by the current macOS version
 
 Save Editable Project (Command-Shift-S, or the Project menu) stores the original
-image, annotations, crop, and transforms in one `.capturelab` file. Open Project
+image, independent image layers, annotations, background/layout, crop, and transforms
+in one `.capturelab` file. Format 2 reads existing format-1 projects; older clients
+must be updated to open format-2 projects. Open Project
 (Command-Shift-O), Open Image, Finder, and file drag-in can reopen it. Projects
 include the original pixels under redactions; use Save Edited Image, Copy,
-PNG drag-out, or R2 upload to share only the composited result.
+PNG/JPEG export, PNG drag-out, or R2 upload to share only the composited result.
+Blur is a visual effect; use mosaic for redaction.
 
 New edited history retains editable objects. Older PNG history opens as a single
 background image. Undo history is not stored in project files; new edits after
@@ -57,12 +71,30 @@ deleting history cannot change the image attached to their actions. Auto-close
 pauses during hovering, dragging, and capture; the menu bar can hide overlays or
 restore the most recently closed one.
 
-Paste Image and drag-in open independent images. Before replacement, edited or
+Paste Image and drag-in add independent layers to the current canvas; when empty,
+the first image becomes the base image. Add Images accepts multiple files.
+Open Image still replaces the document. Before replacement, edited or
 imported content is preserved as an editable project and preview; a failed save keeps
 the current editor intact. Drag the hand icon to deliver the rendered PNG to a
 receiving app. Text fields retain their normal Command-V behavior. Unlock All
 Pins and Close All Pins stay available in the menu bar while pins are locked;
 arrow keys move an unlocked pin by one point, or ten with Shift.
+
+The editor's bottom selector switches between annotation editing, image/object
+editing, and the final output preview. The second toolbar row opens advanced
+styles, the layer panel, and background/templates. Images stay below annotations,
+so redactions cover the composed image; use the layer panel to reorder images.
+Annotations retain their own drawing order. The background surrounds the finished
+crop and does not change object coordinates. Copy, pin, drag-out, history, and R2
+use the same composition; R2 continues to upload PNG.
+
+Start Vertical/Horizontal Scrolling Capture from the Capture menu or menu bar.
+Select content inside one window on one display, exclude scrollbars, configure
+fixed edge bands if needed, then resume and scroll down/right in small steps with
+pauses. Low-confidence matches pause for correction. Finish keeps accepted
+segments; Cancel discards the session. See [scrolling compatibility and limits](docs/scrolling-capture-compatibility.md).
+The [0.9.0 development record](docs/0.9.0-development-plan.md) covers the merged
+0.9/0.10/0.11 scope and the remaining hardware/application validation limits.
 
 Retention changes preview the affected capture count before deletion and require
 a new confirmation if concurrent captures would expand that deletion set. Time

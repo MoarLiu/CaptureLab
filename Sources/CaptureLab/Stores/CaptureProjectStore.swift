@@ -22,7 +22,7 @@ enum CaptureProjectError: LocalizedError {
 /// import URLs are serialized. Only the current state, not undo history, is saved.
 @MainActor
 enum CaptureProjectStore {
-    nonisolated static let version = 1
+    nonisolated static let version = 2
     nonisolated static let maximumBytes = 192 * 1_024 * 1_024
     struct State {
         var document: CaptureDocument
@@ -37,16 +37,22 @@ enum CaptureProjectStore {
         var sourceLogicalSize: CGSize
         var geometry: CaptureDocumentGeometry
         var annotations: [CaptureAnnotation]
+        var imageLayers: [CaptureImageLayer]?
+        var presentation: CapturePresentation?
     }
 
     static func encode(document: CaptureDocument, annotations: [CaptureAnnotation]) throws -> Data {
+        try CaptureLayerImport.validate(document.imageLayers)
+        try document.presentation.validate()
+        guard document.presentation.outputSize(for: document.pixelSize) != nil else { throw CaptureProjectError.tooLarge }
         guard document.geometry.isValid(sourceSize: document.sourcePixelSize),
               validLogicalSize(document.image.size), document.createdAt.timeIntervalSinceReferenceDate.isFinite,
               validAnnotations(annotations),
               let png = document.image.captureLabPNGData() else { throw CaptureProjectError.invalid }
         guard png.count <= CaptureImageImport.maximumBytes else { throw CaptureProjectError.tooLarge }
         let value = File(createdAt: document.createdAt, sourcePNG: png, sourceLogicalSize: document.image.size,
-                         geometry: document.geometry, annotations: annotations)
+                         geometry: document.geometry, annotations: annotations,
+                         imageLayers: document.imageLayers, presentation: document.presentation)
         let data = try JSONEncoder().encode(value)
         guard data.count <= maximumBytes else { throw CaptureProjectError.tooLarge }
         return data
@@ -59,10 +65,13 @@ enum CaptureProjectStore {
         do { header = try decoder.decode(Header.self, from: data) }
         catch { throw CaptureProjectError.invalid }
         guard header.format == "CaptureLab" else { throw CaptureProjectError.invalid }
-        guard header.version == version else { throw CaptureProjectError.unsupportedVersion(header.version) }
+        guard (1...version).contains(header.version) else { throw CaptureProjectError.unsupportedVersion(header.version) }
         let value: File
         do { value = try decoder.decode(File.self, from: data) }
         catch { throw CaptureProjectError.invalid }
+        if header.version >= 2, value.imageLayers == nil || value.presentation == nil { throw CaptureProjectError.invalid }
+        try CaptureLayerImport.validate(value.imageLayers ?? [])
+        try (value.presentation ?? CapturePresentation()).validate()
         guard value.sourcePNG.count <= CaptureImageImport.maximumBytes,
               let source = CGImageSourceCreateWithData(value.sourcePNG as CFData, nil),
               CGImageSourceGetType(source) as String? == UTType.png.identifier,
@@ -77,6 +86,9 @@ enum CaptureProjectStore {
         let image = NSImage(cgImage: cgImage, size: value.sourceLogicalSize)
         var document = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: value.createdAt)
         document.geometry = value.geometry
+        document.imageLayers = value.imageLayers ?? []
+        document.presentation = value.presentation ?? CapturePresentation()
+        guard document.presentation.outputSize(for: document.pixelSize) != nil else { throw CaptureProjectError.tooLarge }
         return State(document: document, annotations: value.annotations)
     }
 
@@ -117,6 +129,8 @@ enum CaptureProjectStore {
             points += annotation.normalizedPoints.count
             guard points <= 1_000_000 else { return false }
             if [.arrow, .line].contains(annotation.kind), annotation.normalizedPoints.count != 2 { return false }
+            if annotation.kind == .curvedArrow, annotation.normalizedPoints.count != 3 { return false }
+            guard annotation.appearance.isValid else { return false }
             if annotation.kind == .brush, annotation.normalizedPoints.count < 2 { return false }
             if let color = annotation.appearance.color,
                ![color.red, color.green, color.blue].allSatisfy({ $0.isFinite && (0...1).contains($0) }) { return false }

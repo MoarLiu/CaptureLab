@@ -59,6 +59,7 @@ private final class SystemCaptureWindowRestoration: CaptureWindowRestoring {
 @MainActor
 final class CaptureLabViewModel: ObservableObject {
     typealias CaptureOperation = @MainActor (CaptureMode) async throws -> URL
+    typealias ScrollingCaptureOperation = @MainActor (ScrollingCaptureDirection) async throws -> NSImage
     typealias TextRecognitionOperation = @MainActor (CGImage) async throws -> OCRResult
     typealias UploadOperation = @MainActor (CloudflareR2UploadRequest) async throws -> CloudflareR2UploadResult
     typealias ImageRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> NSImage?
@@ -68,6 +69,20 @@ final class CaptureLabViewModel: ObservableObject {
     typealias FailurePresentationOperation = @MainActor (_ title: String, _ message: String) -> Void
 
     @Published private(set) var document: CaptureDocument?
+    @Published var isEditingObjects = false
+    @Published var selectedObjects: Set<CaptureObjectID> = []
+    @Published var showsOutputPreview = false
+    @Published private(set) var highlightTextRegions: [CGRect] = []
+    @Published var exportRequest: ExportRequest?
+    struct ExportRequest: Identifiable {
+        let id = UUID()
+        let image: NSImage
+        let fileName: String
+    }
+    private var highlightRecognitionTask: Task<Void, Never>?
+    private var highlightRecognitionID = UUID()
+    private var canvasSourceCache: (id: UUID, image: NSImage)?
+
     @Published var annotations: [CaptureAnnotation] = [] {
         didSet {
             trackAnnotationChange(from: oldValue, to: annotations)
@@ -78,6 +93,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
     @Published var selectedTool: CaptureTool = .select {
         didSet {
+            if selectedTool != .select { isEditingObjects = false; showsOutputPreview = false }
             if selectedTool != .crop { cropSelection = nil }
             if let annotation = annotations.first(where: { $0.id == selectedAnnotationID }),
                selectedTool != .select, selectedTool.annotationKind != annotation.kind {
@@ -253,6 +269,8 @@ final class CaptureLabViewModel: ObservableObject {
               let index = annotations.firstIndex(where: { $0.id == selectedAnnotationID }) else { return }
         var updated = annotations
         let fontChanged = updated[index].appearance.fontSize != annotationAppearance.fontSize
+            || updated[index].appearance.fontFamily != annotationAppearance.fontFamily
+            || updated[index].appearance.fontWeight != annotationAppearance.fontWeight
         updated[index].appearance = annotationAppearance
         if fontChanged, let document {
             updated[index] = updated[index].fittingFontBounds(in: document.sourcePixelSize)
@@ -274,7 +292,12 @@ final class CaptureLabViewModel: ObservableObject {
         return true
     }
 
-    private func applyDocumentEdit(_ updated: CaptureDocument) {
+    @discardableResult
+    private func applyDocumentEdit(_ updated: CaptureDocument) -> Bool {
+        guard updated.presentation.outputSize(for: updated.pixelSize) != nil else {
+            reportFailure(L10n.text(en: "The background layout exceeds the output size limit.", zh: "背景布局超出输出尺寸限制。"), title: L10n.imageExportFailed)
+            return false
+        }
         appendUndo(EditSnapshot(document: document, annotations: annotations))
         annotationRedoStack.removeAll()
         invalidateDocumentActivities()
@@ -283,12 +306,13 @@ final class CaptureLabViewModel: ObservableObject {
         cropSelection = nil
         selectedTool = .select
         ocrText = ""
+        return true
     }
 
     func adjustImage(_ adjustment: CaptureDocument.Adjustment) {
         CaptureEditingSession.commitPendingTextEdits()
         guard let document else { return }
-        applyDocumentEdit(document.adjusting(adjustment))
+        guard applyDocumentEdit(document.adjusting(adjustment)) else { return }
         statusMessage = L10n.text(en: "Image adjusted", zh: "图片已调整")
     }
 
@@ -303,21 +327,139 @@ final class CaptureLabViewModel: ObservableObject {
         guard updated.pixelSize != size else { return true }
         updated.id = UUID()
         updated.geometry.outputSize = size
-        applyDocumentEdit(updated)
+        guard applyDocumentEdit(updated) else { return false }
         statusMessage = L10n.text(en: "Output size updated", zh: "输出尺寸已更新")
         return true
     }
 
     private func renderImage(document: CaptureDocument) -> NSImage? {
-        guard let rendered = imageRenderingOperation(document.image, annotations) else { return nil }
-        return document.applyingGeometry(to: rendered)
+        guard let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
+              let rendered = imageRenderingOperation(source, annotations),
+              let transformed = document.applyingGeometry(to: rendered) else { return nil }
+        return document.presentation.render(transformed)
     }
 
     private func renderPNG(document: CaptureDocument) -> Data? {
-        guard let data = pngDataRenderingOperation(document.image, annotations) else { return nil }
-        guard document.geometry != CaptureDocumentGeometry() else { return data }
-        guard let rendered = NSImage(data: data) else { return nil }
-        return document.applyingGeometry(to: rendered)?.captureLabPNGData()
+        guard let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
+              let data = pngDataRenderingOperation(source, annotations) else { return nil }
+        guard document.geometry != CaptureDocumentGeometry() || !document.presentation.isIdentity else { return data }
+        guard let rendered = NSImage(data: data), let transformed = document.applyingGeometry(to: rendered) else { return nil }
+        return document.presentation.render(transformed)?.captureLabPNGData()
+    }
+
+    /// Cached only by document identity; every layer mutation creates a new ID.
+    /// The persisted document always retains its original source and resources.
+    var annotationCanvasDocument: CaptureDocument? {
+        guard var preview = document else { return nil }
+        guard !preview.imageLayers.isEmpty else { return preview }
+        if canvasSourceCache?.id != preview.id {
+            guard let image = CaptureLayerComposition.render(source: preview.image, layers: preview.imageLayers) else { return nil }
+            canvasSourceCache = (preview.id, image)
+        }
+        preview.image = canvasSourceCache!.image
+        preview.imageLayers = []
+        return preview
+    }
+
+    func commitObjects(layers: [CaptureImageLayer], annotations updatedAnnotations: [CaptureAnnotation]) {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard var updated = document, updated.imageLayers != layers || annotations != updatedAnnotations else { return }
+        do { try CaptureLayerImport.validate(layers) }
+        catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle); return }
+        appendUndo(EditSnapshot(document: document, annotations: annotations))
+        annotationRedoStack.removeAll()
+        invalidateDocumentActivities()
+        updated.imageLayers = layers
+        updated.id = UUID()
+        isApplyingAnnotationHistory = true
+        document = updated
+        annotations = updatedAnnotations
+        isApplyingAnnotationHistory = false
+        selectedAnnotationID = nil
+        cropSelection = nil
+        selectedTool = .select
+        ocrText = ""
+    }
+
+    func applyPresentation(_ presentation: CapturePresentation) {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard var updated = document, updated.presentation != presentation else { return }
+        guard presentation.outputSize(for: updated.pixelSize) != nil else {
+            reportFailure(L10n.text(en: "The background layout exceeds the output size limit.", zh: "背景布局超出输出尺寸限制。"), title: L10n.imageExportFailed)
+            return
+        }
+        updated.presentation = presentation
+        updated.id = UUID()
+        applyDocumentEdit(updated)
+        showsOutputPreview = true
+        statusMessage = L10n.text(en: "Background and layout applied", zh: "背景和布局已应用")
+    }
+
+    func renderedContentImage() -> NSImage? {
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document,
+              let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
+              let rendered = imageRenderingOperation(source, annotations) else { return nil }
+        return document.applyingGeometry(to: rendered)
+    }
+
+    func prepareExport() {
+        guard let snapshot = renderedSnapshot(), let image = snapshot.image else { return }
+        exportRequest = ExportRequest(image: image, fileName: snapshot.fileName)
+    }
+
+    func recognizeHighlightRegions() {
+        guard let document, let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
+              let image = source.captureLabCGImage() else { return }
+        let generation = documentGeneration
+        let request = UUID()
+        highlightRecognitionID = request
+        highlightRecognitionTask?.cancel()
+        statusMessage = L10n.recognizingText
+        highlightRecognitionTask = Task { [weak self] in
+            do {
+                let regions = try await CaptureHighlightAlignment.recognizeRegions(in: image)
+                try Task.checkCancellation()
+                guard let self, self.documentGeneration == generation, self.highlightRecognitionID == request else { return }
+                self.highlightTextRegions = regions
+                self.annotationAppearance.highlightTextAlignment = true
+                self.statusMessage = L10n.text(en: "Text alignment ready: \(regions.count) regions", zh: "文字对齐已就绪：\(regions.count) 个区域")
+            } catch {
+                guard let self, self.documentGeneration == generation, self.highlightRecognitionID == request else { return }
+                if !(error is CancellationError) { self.reportFailure(error.localizedDescription, title: L10n.ocrFailedTitle) }
+            }
+        }
+    }
+
+    func captureScrolling(_ direction: ScrollingCaptureDirection,
+                          operation: @escaping ScrollingCaptureOperation = CaptureLabViewModel.defaultScrollingCaptureOperation) {
+        guard !isCapturing else { return }
+        directRecognition.cancel()
+        isCapturing = true
+        overlayController.isCapturing = true
+        statusMessage = direction.title
+        let restoration = windowVisibilityCoordinator.hideVisibleWindowsForCapture()
+        Task { [weak self] in
+            guard let self else { restoration.restore(); return }
+            await self.windowVisibilityCoordinator.waitUntilWindowsAreHidden()
+            do {
+                let image = try await operation(direction)
+                restoration.restore()
+                self.isCapturing = false
+                self.overlayController.isCapturing = false
+                guard let data = image.captureLabPNGData() else { throw CaptureLabError.imageExportFailed }
+                self.receiveCapture(data: data, mode: .region, showEditor: self.presentEditor)
+            } catch {
+                restoration.restore()
+                self.isCapturing = false
+                self.overlayController.isCapturing = false
+                if error is CancellationError { self.statusMessage = L10n.captureCancelled }
+                else if let captureError = error as? CaptureLabError, case .captureCancelled = captureError {
+                    self.statusMessage = L10n.captureCancelled
+                }
+                else { self.reportFailure(error.localizedDescription, title: L10n.captureFailedTitle) }
+            }
+        }
     }
 
     func constrainCropSelection() {
@@ -469,9 +611,14 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func receiveCapture(url: URL, mode: CaptureMode, showEditor: (() -> Void)?) {
+        do { receiveCapture(data: try CaptureImageImport.data(from: url), mode: mode, showEditor: showEditor) }
+        catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+    }
+
+    private func receiveCapture(data: Data, mode: CaptureMode, showEditor: (() -> Void)?) {
         let options = workflowSettings.options.validated
         if options.afterCapture == .editor {
-            guard loadImage(from: url, sourceURL: nil, status: mode.completedTitle) else { return }
+            guard loadImage(data: data, sourceURL: nil, status: mode.completedTitle) else { return }
             let historyError = recordCurrentCaptureInHistory()
             let didCopy = copyRenderedImage(successStatus: mode.completedAndCopiedTitle)
             if didCopy, let historyError {
@@ -484,7 +631,7 @@ final class CaptureLabViewModel: ObservableObject {
             return
         }
         do {
-            let data = try CaptureImageImport.data(from: url)
+            let data = try CaptureImageImport.pngData(from: data)
             var item: CaptureHistoryItem?
             var historyFailure: Error?
             let image = NSImage(data: data)!
@@ -589,8 +736,17 @@ final class CaptureLabViewModel: ObservableObject {
 
     func pasteImage() {
         guard !isCapturing else { return }
-        do { _ = importImageData(try CaptureImageImport.data(from: pasteboard)) }
-        catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+        CaptureEditingSession.commitPendingTextEdits()
+        do {
+            if let document {
+                let added = try CaptureLayerImport.layers(from: pasteboard, canvasSize: document.sourcePixelSize,
+                    existing: document.imageLayers, visibleNormalizedRect: document.visibleSourceRect)
+                commitObjects(layers: document.imageLayers + added, annotations: annotations)
+                selectedObjects = Set(added.map { .image($0.id) })
+                isEditingObjects = true
+                showsOutputPreview = false
+            } else { _ = importImageData(try CaptureImageImport.data(from: pasteboard)) }
+        } catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
     }
 
     @discardableResult
@@ -599,30 +755,144 @@ final class CaptureLabViewModel: ObservableObject {
         return loadImage(data: data, sourceURL: nil, status: L10n.text(en: "Image imported", zh: "图片已导入"))
     }
 
+    /// All resources are decoded before changing the document; a bad image or
+    /// a late provider callback must not partially replace a user's composition.
+    @discardableResult
+    func addImageResources(_ resources: [(data: Data, name: String)]) -> Bool {
+        guard !isCapturing, !resources.isEmpty else { return false }
+        CaptureEditingSession.commitPendingTextEdits()
+        do {
+            guard resources.count + (document?.imageLayers.count ?? 0) <= CaptureLayerImport.maximumCount + (document == nil ? 1 : 0) else {
+                throw CaptureLayerError.resourceBudget
+            }
+            guard resources.reduce(0, { $0 + $1.data.count }) <= CaptureLayerImport.maximumBytes else { throw CaptureLayerError.resourceBudget }
+            var target: CaptureDocument
+            let isNew = document == nil
+            var remaining = resources
+            if let document { target = document }
+            else {
+                let first = remaining.removeFirst()
+                let png = try CaptureImageImport.pngData(from: first.data)
+                guard let image = NSImage(data: png) else { throw CaptureLayerError.invalidImage }
+                target = CaptureDocument(image: image, sourceURL: nil, createdAt: Date())
+            }
+            var layers = target.imageLayers
+            var added: [CaptureImageLayer] = []
+            for resource in remaining {
+                try CaptureLayerImport.preflight(resource.data, existing: layers)
+                let data = try CaptureImageImport.pngData(from: resource.data)
+                let layer = try CaptureLayerImport.layer(data: data, name: resource.name, canvasSize: target.sourcePixelSize,
+                    existing: layers, visibleNormalizedRect: target.visibleSourceRect)
+                layers.append(layer); added.append(layer)
+            }
+            if isNew {
+                invalidateDocumentActivities()
+                resetAnnotations()
+                target.imageLayers = layers
+                document = target
+                currentHistoryItem = nil
+                finishEditingError = nil
+                ocrText = ""
+            } else { commitObjects(layers: layers, annotations: annotations) }
+            selectedObjects = Set(added.map { .image($0.id) })
+            isEditingObjects = !added.isEmpty
+            showsOutputPreview = false
+            statusMessage = L10n.text(en: "Images added to canvas", zh: "图片已添加到当前画布")
+            return true
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
+            return false
+        }
+    }
+
+    func addImages() {
+        guard !isCapturing else { return }
+        CaptureEditingSession.commitPendingTextEdits()
+        let panel = NSOpenPanel()
+        panel.title = L10n.text(en: "Add Images to Canvas", zh: "添加图片到画布")
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        let generation = documentGeneration
+        guard panel.runModal() == .OK, generation == documentGeneration else { return }
+        let scopedURLs = panel.urls.filter { $0.startAccessingSecurityScopedResource() }
+        defer { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+        do {
+            if let document {
+                let added = try CaptureLayerImport.layers(from: panel.urls, canvasSize: document.sourcePixelSize,
+                    existing: document.imageLayers, visibleNormalizedRect: document.visibleSourceRect)
+                commitObjects(layers: document.imageLayers + added, annotations: annotations)
+                selectedObjects = Set(added.map { .image($0.id) })
+                isEditingObjects = true
+                showsOutputPreview = false
+            } else {
+                guard let first = panel.urls.first else { return }
+                let data = try CaptureImageImport.data(from: first)
+                guard let image = NSImage(data: data) else { throw CaptureLayerError.invalidImage }
+                var imported = CaptureDocument(image: image, sourceURL: nil, createdAt: Date())
+                if panel.urls.count > 1 {
+                    imported.imageLayers = try CaptureLayerImport.layers(from: Array(panel.urls.dropFirst()),
+                        canvasSize: imported.sourcePixelSize, existing: [])
+                }
+                invalidateDocumentActivities()
+                resetAnnotations()
+                document = imported
+                currentHistoryItem = nil
+                finishEditingError = nil
+                ocrText = ""
+                isEditingObjects = !imported.imageLayers.isEmpty
+                statusMessage = L10n.text(en: "Images added to canvas", zh: "图片已添加到当前画布")
+            }
+        } catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+    }
+
     func importDroppedImage(_ providers: [NSItemProvider]) -> Bool {
-        guard !isCapturing, let provider = providers.first else { return false }
-        let type = provider.registeredTypeIdentifiers.first { $0 == UTType.fileURL.identifier }
-            ?? provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true }
-        guard let type else { return false }
+        guard !isCapturing, !providers.isEmpty, providers.count <= CaptureLayerImport.maximumCount else { return false }
+        let selected = providers.compactMap { provider -> (NSItemProvider, String)? in
+            let type = provider.registeredTypeIdentifiers.first { $0 == UTType.fileURL.identifier }
+                ?? provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .image) == true }
+            return type.map { (provider, $0) }
+        }
+        guard selected.count == providers.count else { return false }
         let token = UUID()
         importRequestID = token
         let generation = documentGeneration
-        provider.loadDataRepresentation(forTypeIdentifier: type) { [weak self] data, error in
-            let failure = error?.localizedDescription
-            Task { @MainActor [weak self] in
-                guard let self, self.importRequestID == token, self.documentGeneration == generation else { return }
-                do {
-                    guard let data else { throw CaptureLabError.captureFailed(failure ?? CaptureLabError.imageLoadFailed.localizedDescription) }
-                    if type == UTType.fileURL.identifier {
-                        guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else {
-                            throw CaptureLabError.imageLoadFailed
+        Task { @MainActor [weak self] in
+            do {
+                var resources: [(data: Data, name: String)] = []
+                var projectURL: URL?
+                for (provider, type) in selected {
+                    let data: Data = try await withCheckedThrowingContinuation { continuation in
+                        provider.loadDataRepresentation(forTypeIdentifier: type) { data, error in
+                            if let data { continuation.resume(returning: data) }
+                            else { continuation.resume(throwing: error ?? CaptureLayerError.invalidImage) }
                         }
-                        let scoped = url.startAccessingSecurityScopedResource()
-                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                        if url.pathExtension.lowercased() == "capturelab" { _ = self.openProject(at: url) }
-                        else { _ = self.importImageData(try CaptureImageImport.data(from: url)) }
-                    } else { _ = self.importImageData(data) }
-                } catch { self.reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
+                    }
+                    guard let self, self.importRequestID == token, self.documentGeneration == generation else { return }
+                    if type == UTType.fileURL.identifier {
+                        guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else { throw CaptureLayerError.invalidImage }
+                        if url.pathExtension.lowercased() == "capturelab" {
+                            guard selected.count == 1 else { throw CaptureLayerError.invalidImage }
+                            projectURL = url
+                        } else {
+                            let scoped = url.startAccessingSecurityScopedResource()
+                            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                            resources.append((try CaptureImageImport.data(from: url), url.lastPathComponent))
+                        }
+                    } else { resources.append((data, L10n.text(en: "Dropped image", zh: "拖入的图片"))) }
+                    guard resources.reduce(0, { $0 + $1.data.count }) <= CaptureLayerImport.maximumBytes else {
+                        throw CaptureLayerError.resourceBudget
+                    }
+                }
+                guard let self, self.importRequestID == token, self.documentGeneration == generation else { return }
+                if let projectURL {
+                    let scoped = projectURL.startAccessingSecurityScopedResource()
+                    defer { if scoped { projectURL.stopAccessingSecurityScopedResource() } }
+                    _ = self.openProject(at: projectURL)
+                } else { _ = self.addImageResources(resources) }
+            } catch {
+                guard let self, self.importRequestID == token, self.documentGeneration == generation else { return }
+                self.reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
             }
         }
         return true
@@ -739,7 +1009,7 @@ final class CaptureLabViewModel: ObservableObject {
     private func persistEditableDocument(_ document: CaptureDocument, preview: Data) throws -> CaptureHistoryItem {
         let project = try CaptureProjectStore.encode(document: document, annotations: annotations)
         return try historyStore.saveEditable(preview: preview, project: project, for: currentHistoryItem,
-                                             pixelSize: document.pixelSize, createdAt: document.createdAt)
+                                             pixelSize: document.renderedPixelSize, createdAt: document.createdAt)
     }
 
     func openProject() {
@@ -932,7 +1202,8 @@ final class CaptureLabViewModel: ObservableObject {
 
     func recognizeText() {
         directRecognition.cancel()
-        guard let document, let image = document.applyingGeometry(to: document.image)?.captureLabCGImage() else {
+        guard let document, let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
+              let image = document.applyingGeometry(to: source)?.captureLabCGImage() else {
             reportFailure(CaptureLabError.ocrImageUnavailable.localizedDescription, title: L10n.ocrFailedTitle)
             return
         }
@@ -1052,6 +1323,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
         isApplyingAnnotationHistory = true
         document = snapshot.document
+        selectedObjects = []
         annotations = snapshot.annotations
         isApplyingAnnotationHistory = false
         selectedAnnotationID = nil
@@ -1162,6 +1434,9 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func resetAnnotations() {
+        selectedObjects = []
+        isEditingObjects = false
+        showsOutputPreview = false
         isApplyingAnnotationHistory = true
         annotations.removeAll()
         isApplyingAnnotationHistory = false
@@ -1173,6 +1448,11 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func invalidateDocumentActivities() {
+        canvasSourceCache = nil
+        highlightRecognitionID = UUID()
+        highlightRecognitionTask?.cancel()
+        highlightRecognitionTask = nil
+        highlightTextRegions = []
         documentGeneration &+= 1
         cancelTextRecognition()
         cancelUpload()
@@ -1194,6 +1474,10 @@ final class CaptureLabViewModel: ObservableObject {
 
     static func defaultCaptureOperation(_ mode: CaptureMode) async throws -> URL {
         try await PreciseScreenCapture.shared.capture(mode)
+    }
+
+    static func defaultScrollingCaptureOperation(_ direction: ScrollingCaptureDirection) async throws -> NSImage {
+        try await ScrollingCaptureController.shared.capture(direction: direction)
     }
 
     static func defaultTextRecognitionOperation(_ image: CGImage) async throws -> OCRResult {
@@ -1244,7 +1528,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.8.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

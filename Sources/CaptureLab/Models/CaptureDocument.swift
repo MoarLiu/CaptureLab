@@ -7,6 +7,10 @@ struct CaptureDocument {
     var sourceURL: URL?
     var createdAt: Date
     var geometry = CaptureDocumentGeometry()
+    var imageLayers: [CaptureImageLayer] = []
+    var presentation = CapturePresentation()
+
+    var renderedPixelSize: CGSize { presentation.outputSize(for: pixelSize) ?? pixelSize }
 
     var pixelSize: CGSize {
         geometry.outputSize ?? canvasSize

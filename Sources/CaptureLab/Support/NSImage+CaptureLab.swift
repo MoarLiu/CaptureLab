@@ -109,15 +109,24 @@ extension NSImage {
                 appearance: annotation.appearance
             )
             switch annotation.kind {
-            case .arrow:
-                drawCaptureLabArrow(annotation.imagePoints(in: pixelSize), style: style)
+            case .arrow, .curvedArrow:
+                CaptureAnnotationPaths.drawArrow(points: annotation.imagePoints(in: pixelSize), curved: annotation.kind == .curvedArrow, style: style)
             case .line:
                 drawCaptureLabLine(annotation.imagePoints(in: pixelSize), style: style)
-            case .rectangle:
-                let path = NSBezierPath(rect: annotation.imageRect(in: pixelSize))
-                path.lineWidth = style.lineWidth
-                style.color.setStroke()
-                path.stroke()
+            case .rectangle, .ellipse, .filledRectangle:
+                CaptureAnnotationPaths.drawShape(rect: annotation.imageRect(in: pixelSize), kind: annotation.kind, style: style)
+            case .spotlight:
+                CaptureAnnotationPaths.drawSpotlight(rect: annotation.imageRect(in: pixelSize), imageRect: bounds, style: style)
+            case .blur:
+                // Read the already-rendered stack so blur cannot reveal an
+                // earlier mosaic or a hidden image-layer pixel. Snapshot the
+                // CGContext, not bitmap.cgImage: the latter caches an image
+                // before the effect and would return stale pixels at export.
+                graphicsContext.flushGraphics()
+                guard let current = graphicsContext.cgContext.makeImage(),
+                      let blurred = CaptureBlur.image(from: current, normalizedRect: annotation.normalizedRect,
+                                                       radius: annotation.appearance.blurRadius ?? 12) else { return nil }
+                graphicsContext.cgContext.draw(blurred, in: annotation.imageRect(in: pixelSize))
             case .counter:
                 drawCaptureLabCounter(
                     annotation.text.isEmpty ? "1" : annotation.text,
@@ -127,7 +136,7 @@ extension NSImage {
             case .brush:
                 drawCaptureLabBrush(annotation.imagePoints(in: pixelSize), style: style)
             case .text:
-                drawCaptureLabText(
+                CaptureAnnotationPaths.drawText(
                     annotation.text.isEmpty ? L10n.defaultAnnotationText : annotation.text,
                     rect: annotation.imageRect(in: pixelSize),
                     style: style
@@ -135,43 +144,13 @@ extension NSImage {
             case .highlight:
                 drawCaptureLabHighlight(rect: annotation.imageRect(in: pixelSize), style: style)
             case .mosaic:
-                drawCaptureLabMosaic(annotation, source: source, imageSize: pixelSize)
+                graphicsContext.flushGraphics()
+                guard let current = graphicsContext.cgContext.makeImage() else { return nil }
+                drawCaptureLabMosaic(annotation, source: current, imageSize: pixelSize)
             }
         }
 
         return bitmap
-    }
-
-    private func drawCaptureLabArrow(_ points: [CGPoint], style: CaptureAnnotationStyle) {
-        guard points.count >= 2,
-              let start = points.first,
-              let end = points.last
-        else {
-            return
-        }
-
-        let path = NSBezierPath()
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.lineWidth = style.lineWidth
-        path.move(to: start)
-        path.line(to: end)
-
-        let angle = atan2(end.y - start.y, end.x - start.x)
-        let left = CGPoint(
-            x: end.x - style.arrowHeadLength * cos(angle - style.arrowHeadAngle),
-            y: end.y - style.arrowHeadLength * sin(angle - style.arrowHeadAngle)
-        )
-        let right = CGPoint(
-            x: end.x - style.arrowHeadLength * cos(angle + style.arrowHeadAngle),
-            y: end.y - style.arrowHeadLength * sin(angle + style.arrowHeadAngle)
-        )
-        path.move(to: left)
-        path.line(to: end)
-        path.line(to: right)
-
-        style.color.setStroke()
-        path.stroke()
     }
 
     private func drawCaptureLabLine(_ points: [CGPoint], style: CaptureAnnotationStyle) {
@@ -194,18 +173,14 @@ extension NSImage {
     }
 
     private func drawCaptureLabBrush(_ points: [CGPoint], style: CaptureAnnotationStyle) {
-        guard let first = points.first, points.count >= 2 else {
+        guard points.count >= 2 else {
             return
         }
 
-        let path = NSBezierPath()
+        let path = CaptureAnnotationPaths.brush(points, smoothing: style.appearance.brushSmoothing ?? 0)
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         path.lineWidth = style.brushWidth
-        path.move(to: first)
-        for point in points.dropFirst() {
-            path.line(to: point)
-        }
 
         style.color.setStroke()
         path.stroke()
@@ -246,32 +221,6 @@ extension NSImage {
             height: textHeight
         )
         (value as NSString).draw(in: textRect, withAttributes: attributes)
-    }
-
-    private func drawCaptureLabText(
-        _ text: String,
-        rect: CGRect,
-        style: CaptureAnnotationStyle
-    ) {
-        guard rect.width > 0, rect.height > 0 else {
-            return
-        }
-
-        let fontSize = style.textFontSize(for: rect)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        paragraph.lineBreakMode = .byTruncatingTail
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: style.color,
-            .paragraphStyle: paragraph
-        ]
-        let textRect = rect.insetBy(
-            dx: style.textInset,
-            dy: max(0, (rect.height - fontSize * 1.25) / 2)
-        )
-        (text as NSString).draw(in: textRect, withAttributes: attributes)
     }
 
     private func drawCaptureLabHighlight(rect: CGRect, style: CaptureAnnotationStyle) {

@@ -18,25 +18,24 @@ struct CaptureLabRootView: View {
             Color.clear
                 .frame(height: 98)
 
-            CaptureCanvasView(
-                document: model.document,
-                annotations: $model.annotations,
-                selectedTool: $model.selectedTool,
-                zoomLevel: $zoomLevel,
-                annotationAppearance: model.annotationAppearance,
-                selectedAnnotationID: model.selectedAnnotationID,
-                cropSelection: $model.cropSelection,
-                onSelectionChanged: model.selectAnnotation,
-                cropPreset: model.cropPreset,
-                applyCrop: { _ = model.applyCrop() },
-                cancelCrop: model.cancelCrop,
-                captureAction: model.captureRegion,
-                openAction: model.openImage
-            )
-            .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
+            CaptureEditorCanvasHost(model: model, zoomLevel: $zoomLevel)
+                .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
             HStack(spacing: 12) {
+                if model.hasImage {
+                    Picker(L10n.text(en: "Editor view", zh: "编辑视图"), selection: Binding(
+                        get: { model.showsOutputPreview ? 2 : (model.isEditingObjects ? 1 : 0) },
+                        set: { mode in
+                            CaptureEditingSession.commitPendingTextEdits()
+                            model.showsOutputPreview = mode == 2
+                            model.isEditingObjects = mode == 1
+                        })) {
+                        Text(L10n.text(en: "Annotate", zh: "标注")).tag(0)
+                        Text(L10n.text(en: "Objects", zh: "图层")).tag(1)
+                        Text(L10n.text(en: "Output", zh: "预览")).tag(2)
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 170)
+                }
                 Text(model.statusMessage).help(model.statusMessage)
                 Spacer(minLength: 8)
                 Menu(L10n.text(en: "Project", zh: "项目")) {
@@ -62,6 +61,9 @@ struct CaptureLabRootView: View {
         .onDrop(of: [UTType.fileURL, .image], isTargeted: nil, perform: model.importDroppedImage)
         .background(CaptureWindowReader(window: $window))
         .background(CaptureDocumentCloseGuard(model: model))
+        .sheet(item: $model.exportRequest) { request in
+            CaptureExportView(image: request.image, defaultFileName: request.fileName)
+        }
         .overlay(alignment: .top) {
             VStack(spacing: 0) {
                 EditorTopBarView(
@@ -206,7 +208,7 @@ private struct EditorTopBarView: View {
                 .disabled(!model.hasImage || model.isUploading)
 
                 Button {
-                    model.saveRenderedImage()
+                    model.prepareExport()
                 } label: {
                     Text(L10n.saveAs)
                         .font(.system(size: 12, weight: .semibold))
@@ -246,19 +248,72 @@ private struct EditorOptionsBarView: View {
     let showHistory: () -> Void
     @State private var showSize = false
     @State private var showCropSize = false
+    @State private var showAdvancedStyle = false
+    @State private var showLayers = false
+    @State private var showPresentation = false
+    @State private var presentationSource: NSImage?
+    @State private var presentationDocumentID: UUID?
+
 
     var body: some View {
         HStack(spacing: 12) {
             if model.selectedTool == .crop {
                 cropControls
             } else {
-                appearanceControls
+                ScrollView(.horizontal, showsIndicators: false) { appearanceControls }
+                    .frame(maxWidth: .infinity)
             }
 
             Spacer(minLength: 8)
 
             HStack(spacing: 6) {
+                Button { showAdvancedStyle = true } label: { Image(systemName: "slider.horizontal.3") }
+                    .help(L10n.text(en: "Advanced annotation styles", zh: "高级标注样式"))
+                    .accessibilityLabel(L10n.text(en: "Advanced annotation styles", zh: "高级标注样式"))
+                    .disabled(!model.hasImage)
+                    .popover(isPresented: $showAdvancedStyle) {
+                        CaptureAdvancedAnnotationStyleView(appearance: $model.annotationAppearance, tool: editingTool,
+                            highlightAlignmentAction: model.recognizeHighlightRegions)
+                    }
+                Button {
+                    CaptureEditingSession.commitPendingTextEdits()
+                    model.isEditingObjects = true
+                    model.showsOutputPreview = false
+                    showLayers = true
+                } label: { Image(systemName: "square.3.layers.3d") }
+                    .help(L10n.text(en: "Objects and images", zh: "图层与图片"))
+                    .accessibilityLabel(L10n.text(en: "Objects and images", zh: "图层与图片"))
+                    .disabled(!model.hasImage)
+                    .popover(isPresented: $showLayers) {
+                        if let document = model.document {
+                            CaptureLayersView(document: document, annotations: model.annotations,
+                                selectedObjects: model.selectedObjects,
+                                onSelectionChanged: { model.selectedObjects = $0 },
+                                onCommit: { model.commitObjects(layers: $0, annotations: $1) }, addImages: model.addImages)
+                                .frame(width: 340, height: 480)
+                        }
+                    }
+                Button {
+                    presentationSource = model.renderedContentImage()
+                    presentationDocumentID = model.document?.id
+                    showPresentation = presentationSource != nil
+                } label: { Image(systemName: "photo.artframe") }
+                    .help(L10n.text(en: "Background and templates", zh: "背景与模板"))
+                    .accessibilityLabel(L10n.text(en: "Background and templates", zh: "背景与模板"))
+                    .disabled(!model.hasImage)
+                    .sheet(isPresented: $showPresentation) {
+                        if let document = model.document {
+                            CapturePresentationView(presentation: .constant(document.presentation), sourceSize: document.pixelSize,
+                                sourceImage: presentationSource, onApply: { presentation in
+                                    guard model.document?.id == presentationDocumentID else { return }
+                                    model.applyPresentation(presentation)
+                                })
+                        }
+                    }
                 Menu {
+                    Button(L10n.text(en: "Add Images…", zh: "添加图片…"), action: model.addImages)
+                    ScrollingCaptureMenu(model: model)
+                    Divider()
                     Button(L10n.text(en: "Output Size…", zh: "输出尺寸…")) { showSize = true }
                     Button(L10n.text(en: "Rotate 90° Clockwise", zh: "顺时针旋转 90°")) { model.adjustImage(.rotateClockwise) }
                     Button(L10n.text(en: "Flip Horizontally", zh: "水平翻转")) { model.adjustImage(.flipHorizontal) }
@@ -293,6 +348,9 @@ private struct EditorOptionsBarView: View {
         .padding(.horizontal, 14)
         .frame(height: 44)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: model.document?.id) { id in
+            if showPresentation, id != presentationDocumentID { showPresentation = false }
+        }
     }
 
     private var appearanceControls: some View {
@@ -371,7 +429,7 @@ private struct EditorOptionsBarView: View {
 
     private var canEditColor: Bool { editingTool != .mosaic && editingTool != .crop }
     private var canEditLineWidth: Bool {
-        [.select, .arrow, .line, .rectangle, .brush].contains(editingTool)
+        [.select, .arrow, .line, .rectangle, .brush, .ellipse, .filledRectangle, .curvedArrow].contains(editingTool)
     }
     private var canEditFontSize: Bool { [.select, .text, .counter].contains(editingTool) }
 
@@ -496,24 +554,24 @@ private struct ZoomToolbarMenu: View {
 
 private struct ToolStripView: View {
     @ObservedObject var model: CaptureLabViewModel
-
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(CaptureTool.allCases) { tool in
-                ToolbarToolButton(
-                    tool: tool,
-                    isSelected: model.selectedTool == tool,
-                    isDisabled: !model.hasImage && tool != .select
-                ) {
-                    model.selectedTool = tool
+        HStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(CaptureTool.allCases) { tool in
+                        ToolbarToolButton(tool: tool, isSelected: model.selectedTool == tool,
+                            isDisabled: !model.hasImage && tool != .select) { model.selectedTool = tool }
+                    }
                 }
-
-                if tool != CaptureTool.allCases.last {
-                    Divider()
-                        .frame(height: 22)
-                        .padding(.horizontal, 1)
+            }.frame(minWidth: 120, idealWidth: 370, maxWidth: 520, maxHeight: 28)
+            Menu {
+                ForEach(CaptureTool.allCases) { tool in
+                    Button { model.selectedTool = tool } label: { Label(tool.title, systemImage: tool.systemImage) }
                 }
-            }
+            } label: { Image(systemName: "chevron.down") }
+                .menuStyle(.borderlessButton).frame(width: 18)
+                .help(L10n.toolsMenu)
+                .accessibilityLabel(L10n.toolsMenu)
         }
         .padding(.horizontal, 5)
         .frame(height: 28)
