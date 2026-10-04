@@ -79,6 +79,7 @@ struct CaptureLabApp: App {
                 showHistory: showHistory,
                 showShortcutSettings: showShortcutSettings,
                 showR2Settings: showR2Settings,
+                showRecognitionSettings: { showUtilityWindow("recognition-settings") },
                 showWorkflowSettings: showWorkflowSettings
             )
         } label: {
@@ -88,10 +89,11 @@ struct CaptureLabApp: App {
         .commands {
             CaptureLabCommands(
                 model: model,
-                shortcutStore: shortcutStore,
                 showMainWindow: showMainWindow,
                 showHistory: showHistory,
                 showR2Settings: showR2Settings,
+                showShortcutSettings: showShortcutSettings,
+                showRecognitionSettings: { showUtilityWindow("recognition-settings") },
                 showWorkflowSettings: showWorkflowSettings
             )
         }

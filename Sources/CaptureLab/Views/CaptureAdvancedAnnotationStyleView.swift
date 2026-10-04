@@ -39,7 +39,9 @@ struct CaptureAdvancedAnnotationStyleView: View {
             if tool == .text { textStyle }
             if tool == .blur {
                 slider(L10n.text(en: "Blur radius", zh: "模糊强度"), binding: value(\.blurRadius, fallback: 12), range: 1...60)
-                Text(L10n.text(en: "Blur is a visual effect. Use mosaic to redact sensitive content.", zh: "模糊用于视觉处理；遮挡敏感内容请使用马赛克。"))
+            }
+            if tool == .blur || tool == .mosaic {
+                Text(L10n.redactionGuidance)
                     .font(.caption).foregroundStyle(.secondary)
             }
             if tool == .spotlight {

@@ -3,6 +3,34 @@ import XCTest
 @testable import CaptureLab
 
 final class CaptureAnnotationRendererTests: XCTestCase {
+    func testOpaqueFillExportDoesNotDependOnTheCoveredSourcePixels() throws {
+        func source(secret: NSColor) throws -> NSImage {
+            let context = try XCTUnwrap(CGContext(data: nil, width: 160, height: 128,
+                bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(NSColor.cyan.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: 160, height: 128))
+            context.setFillColor(secret.cgColor)
+            context.fill(CGRect(x: 60, y: 48, width: 40, height: 32))
+            return NSImage(cgImage: try XCTUnwrap(context.makeImage()), size: CGSize(width: 80, height: 64))
+        }
+        let first = try source(secret: .white)
+        let second = try source(secret: .black)
+        XCTAssertNotEqual(try rgbaBytes(XCTUnwrap(first.captureLabCGImage())),
+                          try rgbaBytes(XCTUnwrap(second.captureLabCGImage())))
+        let cover = CaptureAnnotation(kind: .filledRectangle,
+            normalizedRect: CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5),
+            appearance: .init(color: CaptureAnnotationColor(.black), shapeFill: .fill))
+        let firstPNG = try XCTUnwrap(first.captureLabPNGData(annotations: [cover]))
+        let secondPNG = try XCTUnwrap(second.captureLabPNGData(annotations: [cover]))
+        let firstOutput = try XCTUnwrap(NSBitmapImageRep(data: firstPNG)?.cgImage)
+        let secondOutput = try XCTUnwrap(NSBitmapImageRep(data: secondPNG)?.cgImage)
+        XCTAssertEqual(firstOutput.width, 160)
+        XCTAssertEqual(firstOutput.height, 128)
+        XCTAssertEqual(try rgbaBytes(firstOutput),
+                       try rgbaBytes(secondOutput))
+    }
+
     func testAnnotatedImageAndPNGKeepSourceCGImagePixelDimensions() throws {
         let cases: [(pixels: CGSize, logical: CGSize)] = [
             (CGSize(width: 300, height: 150), CGSize(width: 100, height: 50)),
@@ -189,6 +217,18 @@ final class CaptureAnnotationRendererTests: XCTestCase {
             accuracy: 0.0001
         )
         XCTAssertEqual(CaptureAnnotationStyle.mosaicOpacity, 1)
+    }
+
+    private func rgbaBytes(_ image: CGImage) throws -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return bytes
     }
 
     private func makeImage(

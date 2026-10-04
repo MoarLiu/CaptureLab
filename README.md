@@ -26,8 +26,6 @@ Current features:
   flips, and output dimensions
 - transparent/solid/gradient/built-in/custom backgrounds, padding, rounded corners,
   shadows, output ratios, automatic margin balancing, and personal presets
-- vertical and horizontal manual scrolling capture with thumbnail preview,
-  fixed edge bands, uncertain-seam correction, undo-last-segment, and resource limits
 - floating pinned screenshots with resize, opacity, click-through locking, and arrow-key movement
 - optional quick-access overlay with per-capture copy, save, edit, pin, upload, and drag actions
 - image paste and drag-in import, plus PNG file-promise drag-out from editor, history, and overlay
@@ -45,12 +43,13 @@ must be updated to open format-2 projects. Open Project
 (Command-Shift-O), Open Image, Finder, and file drag-in can reopen it. Projects
 include the original pixels under redactions; use Save Edited Image, Copy,
 PNG/JPEG export, PNG drag-out, or R2 upload to share only the composited result.
-Blur is a visual effect; use mosaic for redaction.
+Blur and mosaic are visual effects and can leave text recognizable. Fully cover
+sensitive content with an opaque shape using Fill, then share the exported image.
 
 Editor OCR reads the final composition, including redactions, image layers,
 crop/transforms, and background. A rendering failure does not fall back to the
-original. Changing annotations cancels pending recognition; changing blur or
-mosaic also clears existing OCR text. Arrow keys move annotations and selected
+original. Changing annotations cancels pending recognition; changing blur,
+mosaic, or filled shapes also clears existing OCR text. Arrow keys move annotations and selected
 objects by one displayed point, or ten with Shift, at every zoom level.
 
 New edited history retains editable objects. Older PNG history opens as a single
@@ -95,13 +94,11 @@ Annotations retain their own drawing order. The background surrounds the finishe
 crop and does not change object coordinates. Copy, pin, drag-out, history, and R2
 use the same composition; R2 continues to upload PNG.
 
-Start Vertical/Horizontal Scrolling Capture from the Capture menu or menu bar.
-Select content inside one window on one display, exclude scrollbars, configure
-fixed edge bands if needed, then resume and scroll down/right in small steps with
-pauses. Low-confidence matches pause for correction. Finish keeps accepted
-segments; Cancel discards the session. See [scrolling compatibility and limits](docs/scrolling-capture-compatibility.md).
-The [0.9.0 development record](docs/0.9.0-development-plan.md) covers the merged
-0.9/0.10/0.11 scope and the remaining hardware/application validation limits.
+The [0.11.0 plan and validation record](docs/0.11.0-validation.md) covers daily
+capture/editing and isolated update validation. Scrolling capture was removed
+in 0.11.0; existing saved images and projects remain available for editing.
+The [0.9.0 development record](docs/0.9.0-development-plan.md) describes that
+release's historical scope and validation limits.
 The [0.10.0 review remediation record](docs/0.10.0-review-remediation.md) evaluates
 the two third-party reports and records the subsequent fixes and validation.
 

@@ -312,7 +312,6 @@ private struct EditorOptionsBarView: View {
                     }
                 Menu {
                     Button(L10n.text(en: "Add Images…", zh: "添加图片…"), action: model.addImages)
-                    ScrollingCaptureMenu(model: model)
                     Divider()
                     Button(L10n.text(en: "Output Size…", zh: "输出尺寸…")) { showSize = true }
                     Button(L10n.text(en: "Rotate 90° Clockwise", zh: "顺时针旋转 90°")) { model.adjustImage(.rotateClockwise) }
@@ -377,10 +376,11 @@ private struct EditorOptionsBarView: View {
             .disabled(!model.hasImage || !canEditFontSize)
             .accessibilityLabel(L10n.annotationFontSize)
 
-            Text(model.selectedAnnotationID == nil ? L10n.newAnnotationAppearanceHint : L10n.selectedAnnotationAppearanceHint)
+            Text(editingTool == .blur || editingTool == .mosaic ? L10n.redactionHint
+                 : model.selectedAnnotationID == nil ? L10n.newAnnotationAppearanceHint : L10n.selectedAnnotationAppearanceHint)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .help(L10n.annotationAppearanceHelp)
+                .help(editingTool == .blur || editingTool == .mosaic ? L10n.redactionGuidance : L10n.annotationAppearanceHelp)
 
             if model.hasImage {
                 Text(model.documentTitle)

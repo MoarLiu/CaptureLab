@@ -34,6 +34,30 @@ enum L10n {
     static var clearMarkups: String { text(en: "Clear Markups", zh: "清空标注") }
     static var captureMenu: String { text(en: "Capture", zh: "截图") }
     static var toolsMenu: String { text(en: "Tools", zh: "工具") }
+    static var moreCapture: String { text(en: "More Capture Options", zh: "更多截图") }
+    static var recognitionMenu: String { text(en: "Text and QR Codes", zh: "文字与二维码") }
+    static var openEditor: String { text(en: "Open Editor", zh: "打开编辑器") }
+    static var recentAndHistory: String { text(en: "Recent Captures and History", zh: "最近截图与历史") }
+    static var showAllHistory: String { text(en: "View All History…", zh: "查看全部历史…") }
+    static var openAndPaste: String { text(en: "Open and Paste", zh: "打开与粘贴") }
+    static var currentImageMenu: String { text(en: "Current Image", zh: "当前图片") }
+    static var overlaysAndPins: String { text(en: "Overlays and Pins", zh: "浮层与贴图") }
+    static var settingsMenu: String { text(en: "Settings", zh: "设置") }
+    static var otherSettings: String { text(en: "Other Settings", zh: "其他设置") }
+    static var captureAndHistorySettings: String { text(en: "Capture and History…", zh: "截图与历史…") }
+    static var shortcutUnavailable: String { text(en: "Shortcut Unavailable…", zh: "快捷键不可用…") }
+    static var shareMenu: String { text(en: "Share", zh: "分享") }
+    static var savePNGMenu: String { text(en: "Save PNG…", zh: "保存 PNG…") }
+    static var exportImageMenu: String { text(en: "Export PNG / JPEG…", zh: "导出 PNG / JPEG…") }
+    static var openProjectMenu: String { text(en: "Open Project…", zh: "打开项目…") }
+    static var saveProjectMenu: String { text(en: "Save Editable Project…", zh: "保存可编辑项目…") }
+    static var uploadToR2: String { text(en: "Upload to R2", zh: "上传到 R2") }
+    static var recognizeCurrentImage: String { text(en: "Recognize Text in Current Image", zh: "识别当前图片文字") }
+    static var addImagesToCanvas: String { text(en: "Add Images to Canvas…", zh: "添加图片到画布…") }
+    static var selectMultipleObjects: String { text(en: "Select Multiple Objects", zh: "选择多个对象") }
+    static var lineAndShapeTools: String { text(en: "Lines and Shapes", zh: "线条与形状") }
+    static var textAndMarkTools: String { text(en: "Text and Marks", zh: "文字与标记") }
+    static var visualEffectTools: String { text(en: "Visual Effects", zh: "视觉处理") }
     static var runOCR: String { text(en: "Run OCR", zh: "运行 OCR") }
     static var copyOCRText: String { text(en: "Copy OCR Text", zh: "复制 OCR 文本") }
     static var clearOCRText: String { text(en: "Clear OCR Text", zh: "清空 OCR 文本") }
@@ -227,6 +251,13 @@ enum L10n {
     static var toolText: String { text(en: "Text", zh: "文字") }
     static var toolTextHighlight: String { text(en: "Text Highlight", zh: "文字高亮") }
     static var toolMosaic: String { text(en: "Mosaic", zh: "马赛克") }
+    static var redactionHint: String {
+        text(en: "Cover sensitive text with an opaque fill", zh: "敏感文字请用不透明填充完全覆盖")
+    }
+    static var redactionGuidance: String {
+        text(en: "Blur and mosaic can leave text recognizable. Fully cover sensitive content with a shape using Fill, then share the exported image, not the editable project.",
+             zh: "模糊和马赛克可能保留可识别文字。请用形状的“填充”样式完全覆盖敏感内容，再分享导出的图片；可编辑项目仍包含原图。")
+    }
     static var defaultAnnotationText: String { text(en: "Text", zh: "文字") }
 
     static var updateAvailableTitle: String { text(en: "Update Available", zh: "发现新版本") }

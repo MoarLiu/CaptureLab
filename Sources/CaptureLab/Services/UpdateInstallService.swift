@@ -166,7 +166,7 @@ capturelab_target_process_is_running() {
 
   while IFS= read -r pid; do
     [[ "$pid" == <-> && "$pid" -gt 1 ]] || continue
-    command="$(/bin/ps -ww -p "$pid" -o command= 2>/dev/null || true)"
+    command="$(LC_ALL=en_US.UTF-8 /bin/ps -ww -p "$pid" -o command= 2>/dev/null || true)"
     [[ -n "$command" ]] || continue
     capturelab_relaunch_command_matches_binary "$command" "$expected_binary" && return 0
   done <<< "$(/usr/bin/pgrep -x CaptureLab 2>/dev/null || true)"
@@ -436,6 +436,8 @@ pid_snapshot_contains() {
   return 1
 }
 
+# ps escapes non-ASCII paths under LC_ALL=C; command queries below use UTF-8
+# while version ordering and process start tokens retain the installer locale.
 command_matches_expected_binary() {
   local command="$1"
   local expected_binary="$2"
@@ -591,7 +593,7 @@ capturelab_process_records() {
     [[ -n "$pid" ]] || continue
     start_token="$(process_start_token "$pid" || true)"
     [[ -n "$start_token" ]] || continue
-    command="$(/bin/ps -ww -p "$pid" -o command= 2>/dev/null || true)"
+    command="$(LC_ALL=en_US.UTF-8 /bin/ps -ww -p "$pid" -o command= 2>/dev/null || true)"
     [[ -n "$command" ]] || continue
     /usr/bin/printf '%s\t%s\t%s\n' "$pid" "$start_token" "$command"
   done <<< "$snapshot"
@@ -879,12 +881,12 @@ for _ in {1..25}; do
 done
 [[ -n "$NEW_PID" ]] || fail "The updated app did not start; restoring the previous version."
 process_generation_is_still_tracked "$NEW_PID" || fail "The updated app process identity changed during launch; restoring the previous version."
-NEW_COMMAND="$(/bin/ps -ww -p "$NEW_PID" -o command= 2>/dev/null || true)"
+NEW_COMMAND="$(LC_ALL=en_US.UTF-8 /bin/ps -ww -p "$NEW_PID" -o command= 2>/dev/null || true)"
 command_matches_expected_binary "$NEW_COMMAND" "$EXPECTED_BINARY" || fail "A different CaptureLab process was detected; restoring the previous version."
 /bin/sleep 2
 /bin/kill -0 "$NEW_PID" 2>/dev/null || fail "The updated app exited during launch; restoring the previous version."
 process_generation_is_still_tracked "$NEW_PID" || fail "The updated app process was replaced during launch; restoring the previous version."
-STABLE_COMMAND="$(/bin/ps -ww -p "$NEW_PID" -o command= 2>/dev/null || true)"
+STABLE_COMMAND="$(LC_ALL=en_US.UTF-8 /bin/ps -ww -p "$NEW_PID" -o command= 2>/dev/null || true)"
 command_matches_expected_binary "$STABLE_COMMAND" "$EXPECTED_BINARY" || fail "The updated app process changed during launch; restoring the previous version."
 process_generation_is_still_tracked "$NEW_PID" || fail "The updated app process was replaced during validation; restoring the previous version."
 
@@ -902,7 +904,7 @@ binary_contains_expected_architecture "$FINAL_BINARY" || fail "The installed upd
 verify_swap_helper "$FINAL_EMBEDDED_HELPER" || fail "The installed update helper changed unexpectedly; restoring the previous version."
 /bin/kill -0 "$NEW_PID" 2>/dev/null || fail "The updated app exited during final validation; restoring the previous version."
 process_generation_is_still_tracked "$NEW_PID" || fail "The updated app process changed during final validation; restoring the previous version."
-FINAL_COMMAND="$(/bin/ps -ww -p "$NEW_PID" -o command= 2>/dev/null || true)"
+FINAL_COMMAND="$(LC_ALL=en_US.UTF-8 /bin/ps -ww -p "$NEW_PID" -o command= 2>/dev/null || true)"
 command_matches_expected_binary "$FINAL_COMMAND" "$EXPECTED_BINARY" || fail "The updated app executable changed during final validation; restoring the previous version."
 
 REPLACEMENT_STARTED=0

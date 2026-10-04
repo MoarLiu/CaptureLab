@@ -63,6 +63,29 @@ final class ReviewRemediationTests: XCTestCase {
         XCTAssertTrue(model.ocrText.isEmpty)
     }
 
+    func testFilledShapeChangesAndUndoCannotLeavePreviousOCRText() throws {
+        let fixture = try ReviewFixture()
+        defer { fixture.remove() }
+        let rect = CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)
+        for annotation in [
+            CaptureAnnotation(kind: .filledRectangle, normalizedRect: rect),
+            CaptureAnnotation(kind: .rectangle, normalizedRect: rect, appearance: .init(shapeFill: .fill)),
+            CaptureAnnotation(kind: .ellipse, normalizedRect: rect, appearance: .init(shapeFill: .strokeAndFill))
+        ] {
+            let model = fixture.model()
+            XCTAssertTrue(model.openSnapshot(CaptureImageSnapshot(data: try fixture.imageData())))
+            model.ocrText = "previous uncovered text"
+            model.addAnnotation(annotation)
+            XCTAssertTrue(model.ocrText.isEmpty)
+            model.ocrText = "text from covered image"
+            model.undoAnnotation()
+            XCTAssertTrue(model.ocrText.isEmpty)
+            model.ocrText = "text from restored image"
+            model.redoAnnotation()
+            XCTAssertTrue(model.ocrText.isEmpty)
+        }
+    }
+
     func testCancelledQuitNeverStartsUpdateOrReplaysItOnLaterQuit() throws {
         let fixture = try ReviewFixture()
         defer { fixture.remove() }
@@ -99,7 +122,7 @@ final class ReviewRemediationTests: XCTestCase {
         XCTAssertEqual(installationCount, 1)
     }
 
-    func testUpdateGateBlocksCaptureLauncherAndScrollingAndResumesAfterFailure() async throws {
+    func testUpdateGateBlocksCaptureAndLauncherAndResumesAfterFailure() async throws {
         _ = NSApplication.shared
         let fixture = try ReviewFixture()
         defer { fixture.remove() }
@@ -116,7 +139,6 @@ final class ReviewRemediationTests: XCTestCase {
         XCTAssertTrue(model.isCheckingForUpdates)
         model.performCaptureAction(.launcher)
         model.capture(.fullScreen)
-        model.captureScrolling(.vertical, operation: { _ in XCTFail("Scrolling must stay blocked"); throw CancellationError() })
         XCTAssertFalse(model.isCapturing)
         XCTAssertEqual(captures, 0)
         XCTAssertEqual(launchers, 0)

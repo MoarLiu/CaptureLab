@@ -615,6 +615,53 @@ echo "$NAME-end" >> "$EVENTS_PATH"
         XCTAssertEqual(result.output, "202")
     }
 
+    func testLiveProcessHealthPreservesUnicodePathsUnderInstallerLocale() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CaptureLab 更新验证 \(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("CaptureLab")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: executable)
+        let child = Process()
+        child.executableURL = executable
+        child.arguments = ["30"]
+        try child.run()
+        defer {
+            if child.isRunning { child.terminate() }
+            child.waitUntilExit()
+        }
+
+        let script = """
+        set -euo pipefail
+        export LC_ALL=C
+        \(UpdateInstallService.safeRelaunchShellFunctions)
+        \(UpdateInstallService.processHealthShellFunctions)
+        APP_NAME="CaptureLab"
+        EXPECTED_BINARY="$1"
+        PREEXISTING_PIDS=""
+        TRACKED_UPDATE_PIDS=""
+        TRACKED_UPDATE_START_RECORDS=""
+        capturelab_target_process_is_running "$EXPECTED_BINARY"
+        RECORDS="$(capturelab_process_records)"
+        track_new_expected_pids_from_records "$RECORDS"
+        FOUND="$(select_new_expected_pid_from_records "" "$EXPECTED_BINARY" "$RECORDS")"
+        [[ "$FOUND" == "$2" ]]
+        process_generation_is_still_tracked "$FOUND"
+        /usr/bin/printf '%s\\n' "$FOUND"
+        """
+        let pipe = Pipe()
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        probe.arguments = ["-c", script, "unicode-process-probe", executable.path, "\(child.processIdentifier)"]
+        probe.standardOutput = pipe
+        probe.standardError = pipe
+        try probe.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        probe.waitUntilExit()
+        XCTAssertEqual(probe.terminationStatus, 0, output)
+        XCTAssertEqual(output.trimmingCharacters(in: .whitespacesAndNewlines), "\(child.processIdentifier)")
+    }
+
     func testRollbackTerminationKillsOnlyNewExpectedPathProcesses() throws {
         let preexisting = try startSleeper()
         let selected = try startSleeper()

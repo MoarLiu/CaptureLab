@@ -73,20 +73,3 @@ struct RecognitionSettingsView: View {
         }.padding(20).frame(width: 460, height: 440).captureLabWindowCloseShortcuts()
     }
 }
-
-struct PrecisionCaptureMenu: View {
-    @ObservedObject var model: CaptureLabViewModel
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        Button(L10n.captureLauncher) { model.presentCaptureLauncher?() }.disabled(model.isCapturing)
-        Button(L10n.lastRegion) { model.capture(.lastRegion) }.disabled(model.isCapturing)
-        Button(L10n.frozenRegion) { model.capture(.frozenRegion) }.disabled(model.isCapturing)
-        Button(L10n.directText) { model.performCaptureAction(.text) }.disabled(model.isCapturing)
-        Button(L10n.directQRCode) { model.performCaptureAction(.qrCode) }.disabled(model.isCapturing)
-        Button(L10n.recognitionLanguages) {
-            NSApp.setActivationPolicy(.regular)
-            openWindow(id: "recognition-settings")
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-}

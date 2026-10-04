@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.11.0 - 2026-10-04
+
+- Removed vertical and horizontal scrolling capture from the Capture menu,
+  menu bar, and image-adjustment menu, along with its capture session,
+  stitching engine, dedicated tests, and feasibility experiment.
+  Previously saved images and editable projects can still be opened.
+- Explain that blur and mosaic can leave text recognizable; recommend fully
+  covering sensitive content with an opaque fill before exporting an image.
+- Clear stale OCR text when filled shapes change, including undo and redo.
+- Reorganized the status item and application menus: common capture actions
+  are direct entries, related tools and settings are grouped, and duplicate
+  open/save/share entries were removed from the same menu surface.
+- Disable related menus during capture and updates, while preventing duplicate
+  OCR and upload requests.
+- Fix update restart detection for installation folders with Chinese or other
+  non-ASCII characters, preventing a successful launch from triggering rollback.
+
+Validation: 374 tests pass with no skips under strict concurrency and warnings
+as errors. ARM64 and x86_64 Release builds pass. Native Chinese and English menu
+validation, update installation, startup checks, and remaining validation limits
+are recorded in the [0.11.0 plan and validation record](docs/0.11.0-validation.md).
+
+Verified release artifacts; publication approved:
+
+- `CaptureLab-0.11.0-macos-arm64.dmg` — SHA-256:
+  `3782c7e3b98a327b200d35b4050a6224190ec1126b8552b892c8a685bd365339`
+- `CaptureLab-0.11.0-macos-x86_64.dmg` — SHA-256:
+  `eab9a74ca122e5e24f074d3ed1dfb5d1e885d1bc26291458f71b41be2b1dfd18`
+
+The packages use the existing self-signed local identity and are not notarized;
+Gatekeeper may require manual approval. The corrected installer passes a real
+isolated 0.10.1-to-0.11.0 upgrade,
+normal app termination, relaunch, and downloaded-asset cleanup. Existing 0.10.1
+installations in non-ASCII paths still use the old installer; install 0.11.0
+manually or move the app to `/Applications` if the old updater rolls back.
+
 ## 0.10.1 - 2026-10-03
 
 - Confirm region and frozen-region captures when the mouse button is released,

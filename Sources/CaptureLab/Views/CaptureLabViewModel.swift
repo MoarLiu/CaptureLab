@@ -59,7 +59,6 @@ private final class SystemCaptureWindowRestoration: CaptureWindowRestoring {
 @MainActor
 final class CaptureLabViewModel: ObservableObject {
     typealias CaptureOperation = @MainActor (CaptureMode) async throws -> URL
-    typealias ScrollingCaptureOperation = @MainActor (ScrollingCaptureDirection) async throws -> NSImage
     typealias TextRecognitionOperation = @MainActor (CGImage) async throws -> OCRResult
     typealias UploadOperation = @MainActor (CloudflareR2UploadRequest) async throws -> CloudflareR2UploadResult
     typealias ImageRenderingOperation = @MainActor (NSImage, [CaptureAnnotation]) -> NSImage?
@@ -87,7 +86,11 @@ final class CaptureLabViewModel: ObservableObject {
         didSet {
             if oldValue != annotations {
                 cancelTextRecognition()
-                let isRedaction: (CaptureAnnotation) -> Bool = { $0.kind == .blur || $0.kind == .mosaic }
+                let isRedaction: (CaptureAnnotation) -> Bool = {
+                    $0.kind == .blur || $0.kind == .mosaic || $0.kind == .filledRectangle
+                        || (($0.kind == .rectangle || $0.kind == .ellipse)
+                            && $0.appearance.shapeFill.map { $0 != .stroke } == true)
+                }
                 if oldValue.filter(isRedaction) != annotations.filter(isRedaction) { ocrText = "" }
             }
             trackAnnotationChange(from: oldValue, to: annotations)
@@ -248,6 +251,10 @@ final class CaptureLabViewModel: ObservableObject {
 
     var hasImage: Bool {
         document != nil
+    }
+
+    var canStartCapture: Bool {
+        !isCapturing && !isCheckingForUpdates && pendingUpdateInstallation == nil
     }
 
     var canUndoAnnotation: Bool {
@@ -439,37 +446,6 @@ final class CaptureLabViewModel: ObservableObject {
             } catch {
                 guard let self, self.documentGeneration == generation, self.highlightRecognitionID == request else { return }
                 if !(error is CancellationError) { self.reportFailure(error.localizedDescription, title: L10n.ocrFailedTitle) }
-            }
-        }
-    }
-
-    func captureScrolling(_ direction: ScrollingCaptureDirection,
-                          operation: @escaping ScrollingCaptureOperation = CaptureLabViewModel.defaultScrollingCaptureOperation) {
-        guard !isCapturing, !isCheckingForUpdates, pendingUpdateInstallation == nil else { return }
-        directRecognition.cancel()
-        isCapturing = true
-        overlayController.isCapturing = true
-        statusMessage = direction.title
-        let restoration = windowVisibilityCoordinator.hideVisibleWindowsForCapture()
-        Task { [weak self] in
-            guard let self else { restoration.restore(); return }
-            await self.windowVisibilityCoordinator.waitUntilWindowsAreHidden()
-            do {
-                let image = try await operation(direction)
-                restoration.restore()
-                self.isCapturing = false
-                self.overlayController.isCapturing = false
-                guard let data = image.captureLabPNGData() else { throw CaptureLabError.imageExportFailed }
-                self.receiveCapture(data: data, mode: .region, showEditor: self.presentEditor)
-            } catch {
-                restoration.restore()
-                self.isCapturing = false
-                self.overlayController.isCapturing = false
-                if error is CancellationError { self.statusMessage = L10n.captureCancelled }
-                else if let captureError = error as? CaptureLabError, case .captureCancelled = captureError {
-                    self.statusMessage = L10n.captureCancelled
-                }
-                else { self.reportFailure(error.localizedDescription, title: L10n.captureFailedTitle) }
             }
         }
     }
@@ -1515,10 +1491,6 @@ final class CaptureLabViewModel: ObservableObject {
         try await PreciseScreenCapture.shared.capture(mode)
     }
 
-    static func defaultScrollingCaptureOperation(_ direction: ScrollingCaptureDirection) async throws -> NSImage {
-        try await ScrollingCaptureController.shared.capture(direction: direction)
-    }
-
     static func defaultTextRecognitionOperation(_ image: CGImage) async throws -> OCRResult {
         let languages = UserDefaults.standard.stringArray(forKey: RecognitionSettings.key) ?? []
         return try await TextRecognitionService().recognizeTextAsync(in: image, languages: languages)
@@ -1567,7 +1539,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.10.1"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

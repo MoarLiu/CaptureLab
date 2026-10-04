@@ -3,233 +3,94 @@ import SwiftUI
 
 struct CaptureLabCommands: Commands {
     @ObservedObject var model: CaptureLabViewModel
-    @ObservedObject var shortcutStore: CaptureShortcutStore
     let showMainWindow: () -> Void
     let showHistory: () -> Void
     let showR2Settings: () -> Void
+    let showShortcutSettings: () -> Void
+    let showRecognitionSettings: () -> Void
     var showWorkflowSettings: () -> Void = {}
 
     var body: some Commands {
         CommandGroup(replacing: .appSettings) {
             Button(L10n.workflowSettings, action: showWorkflowSettings)
                 .keyboardShortcut(",", modifiers: .command)
+            Menu(L10n.otherSettings) {
+                CaptureOtherSettingsItems(showShortcutSettings: showShortcutSettings,
+                    showRecognitionSettings: showRecognitionSettings, showR2Settings: showR2Settings)
+            }
         }
         CommandGroup(after: .appInfo) {
-            Button(model.isCheckingForUpdates ? L10n.checkingForUpdates : L10n.checkForUpdates) {
-                model.checkForUpdates()
-            }
-            .disabled(model.isCheckingForUpdates)
-
-            Button(L10n.cloudflareR2SettingsMenuItem) {
-                showR2Settings()
-            }
-
+            CaptureUpdateButton(model: model)
             Divider()
         }
-
         CommandGroup(replacing: .newItem) {
-            Button(L10n.text(en: "Open Project…", zh: "打开项目…")) {
-                model.openProject()
-                if model.hasImage { showMainWindow() }
-            }.keyboardShortcut("o", modifiers: [.command, .shift]).disabled(model.isCapturing)
-
-            Button(L10n.captureRegion) {
-                model.capture(.region, onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Button(L10n.captureFullScreen) {
-                model.capture(.fullScreen, onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Button(L10n.captureWindow) {
-                model.capture(.window, onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Menu(L10n.captureDelayedMenu) {
-                Button(L10n.captureDelayedRegion(3)) {
-                    model.capture(.delayedRegion(seconds: 3), onSuccess: showMainWindow)
-                }
-                .disabled(model.isCapturing)
-
-                Button(L10n.captureDelayedRegion(5)) {
-                    model.capture(.delayedRegion(seconds: 5), onSuccess: showMainWindow)
-                }
-                .disabled(model.isCapturing)
-            }
-
-            Button(L10n.pasteImage) {
-                model.pasteImage()
-                if model.hasImage { showMainWindow() }
-            }
-            .disabled(model.isCapturing)
-
-            Button(L10n.openImage) {
-                model.openImage()
-                if model.hasImage { showMainWindow() }
-            }
-            .keyboardShortcut("o", modifiers: .command)
-            .disabled(model.isCapturing)
-
-            Divider()
-
-            Button(L10n.showCaptureLab) {
+            CaptureOpenMenuItems(model: model, showEditor: showMainWindow, usesKeyboardShortcuts: true)
+            Button(L10n.addImagesToCanvas) {
                 showMainWindow()
-            }
-            .keyboardShortcut("0", modifiers: .command)
-
-            Button(L10n.historyBrowserTitle, action: showHistory)
-                .keyboardShortcut("h", modifiers: [.command, .shift])
+                model.addImages()
+            }.disabled(!model.canStartCapture)
         }
-
         CommandGroup(replacing: .saveItem) {
-            Button(L10n.text(en: "Export PNG / JPEG…", zh: "导出 PNG / JPEG…"), action: model.prepareExport)
-                .keyboardShortcut("e", modifiers: .command).disabled(!model.hasImage)
-
-            Button(L10n.text(en: "Save Editable Project…", zh: "保存可编辑项目…"), action: model.saveProject)
-                .keyboardShortcut("s", modifiers: [.command, .shift]).disabled(!model.hasImage)
-
-            Button(L10n.saveEditedImage) {
-                model.saveRenderedImage()
-            }
-            .keyboardShortcut("s", modifiers: .command)
-            .disabled(!model.hasImage)
-
-            Button(L10n.copyEditedImage) {
-                model.copyRenderedImage()
-            }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
-            .disabled(!model.hasImage)
-
-            Button(model.isUploading ? L10n.uploading : L10n.uploadEditedImage) {
-                model.uploadRenderedImage()
-            }
-            .keyboardShortcut("u", modifiers: [.command, .shift])
-            .disabled(!model.hasImage || model.isUploading)
-
-            Button(L10n.pinImage) {
-                model.pinCurrentCapture()
-            }
-            .keyboardShortcut("p", modifiers: [.command, .shift])
-            .disabled(!model.hasImage)
+            CaptureSaveMenuItems(model: model, showEditor: showMainWindow, usesKeyboardShortcuts: true)
+            Menu(L10n.shareMenu) {
+                CaptureShareMenuItems(model: model, usesKeyboardShortcuts: true)
+            }.disabled(!model.hasImage || !model.canStartCapture)
         }
-
         CommandGroup(replacing: .undoRedo) {
-            Button(L10n.undoEdit) {
-                model.undoAnnotation()
-            }
-            .keyboardShortcut("z", modifiers: .command)
-            .disabled(!model.canUndoAnnotation)
-
-            Button(L10n.redoMarkup) {
-                model.redoAnnotation()
-            }
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-            .disabled(!model.canRedoAnnotation)
-
-            Button(L10n.clearMarkups) {
-                model.clearAnnotations()
-            }
-            .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(model.annotations.isEmpty)
+            Button(L10n.undoEdit, action: model.undoAnnotation)
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!model.canUndoAnnotation || !model.canStartCapture)
+            Button(L10n.redoMarkup, action: model.redoAnnotation)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!model.canRedoAnnotation || !model.canStartCapture)
         }
-
-        CommandMenu(L10n.captureMenu) {
-            PrecisionCaptureMenu(model: model)
-            ScrollingCaptureMenu(model: model)
-            Divider()
-            Button(L10n.captureRegion) {
-                model.capture(.region, onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Button(L10n.captureFullScreen) {
-                model.capture(.fullScreen, onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Button(L10n.captureWindow) {
-                model.capture(.window, onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Menu(L10n.captureDelayedMenu) {
-                Button(L10n.captureDelayedRegion(3)) {
-                    model.capture(.delayedRegion(seconds: 3), onSuccess: showMainWindow)
-                }
-                .disabled(model.isCapturing)
-
-                Button(L10n.captureDelayedRegion(5)) {
-                    model.capture(.delayedRegion(seconds: 5), onSuccess: showMainWindow)
-                }
-                .disabled(model.isCapturing)
-            }
-
-            Divider()
-
-            Button(L10n.openImage) {
-                model.openImage()
-            }
-            .disabled(model.isCapturing)
-
-            Divider()
-
-            Button(L10n.copyEditedImage) {
-                model.copyRenderedImage()
-            }
-            .disabled(!model.hasImage)
-
-            Button(L10n.saveEditedImage) {
-                model.saveRenderedImage()
-            }
-            .disabled(!model.hasImage)
-
-            Button(model.isUploading ? L10n.uploading : L10n.uploadEditedImage) {
-                model.uploadRenderedImage()
-            }
-            .disabled(!model.hasImage || model.isUploading)
-        }
-
-        CommandMenu(L10n.toolsMenu) {
-            Button(L10n.text(en: "Add Images to Canvas…", zh: "添加图片到画布…"), action: model.addImages)
-                .disabled(model.isCapturing)
-            Button(L10n.text(en: "Select Multiple Objects", zh: "选择多个对象")) {
+        // Keep the system pasteboard commands and text responder chain intact.
+        CommandGroup(after: .pasteboard) {
+            CapturePasteImageButton(model: model, showEditor: showMainWindow)
+            Button(L10n.selectMultipleObjects) {
+                showMainWindow()
                 CaptureEditingSession.commitPendingTextEdits()
                 model.isEditingObjects = true
                 model.showsOutputPreview = false
-            }.disabled(!model.hasImage)
-            Divider()
-
-            ForEach(CaptureTool.allCases) { tool in
-                Button {
-                    model.selectedTool = tool
-                } label: {
-                    Label(tool.title, systemImage: tool.systemImage)
-                }
-                .keyboardShortcut(tool.menuShortcut, modifiers: .command)
-                .disabled(!model.hasImage && tool != .select)
+            }.disabled(!model.hasImage || !model.canStartCapture)
+            Button(L10n.clearMarkups, action: model.clearAnnotations)
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(model.annotations.isEmpty || !model.canStartCapture)
+        }
+        CommandGroup(after: .windowArrangement) {
+            Button(L10n.openEditor, action: showMainWindow)
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(model.isCapturing)
+            Button(L10n.historyBrowserTitle, action: showHistory)
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .disabled(model.isCapturing)
+            Button(L10n.pinImage, action: model.pinCurrentCapture)
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(!model.hasImage || !model.canStartCapture)
+        }
+        CommandMenu(L10n.captureMenu) {
+            CaptureBasicMenuItems(model: model, showEditor: showMainWindow)
+            Button(L10n.lastRegion) { model.capture(.lastRegion, onSuccess: showMainWindow) }
+                .disabled(!model.canStartCapture)
+            Menu(L10n.moreCapture) {
+                CaptureMoreMenuItems(model: model, showEditor: showMainWindow, includesLastRegion: false)
+            }.disabled(!model.canStartCapture)
+        }
+        CommandMenu(L10n.toolsMenu) {
+            CaptureToolMenuItems(model: model, tools: [.select, .crop], showEditor: showMainWindow)
+            Menu(L10n.lineAndShapeTools) {
+                CaptureToolMenuItems(model: model,
+                    tools: [.arrow, .curvedArrow, .line, .rectangle, .ellipse, .filledRectangle], showEditor: showMainWindow)
+            }.disabled(!model.hasImage || !model.canStartCapture)
+            Menu(L10n.textAndMarkTools) {
+                CaptureToolMenuItems(model: model, tools: [.text, .counter, .brush, .highlight], showEditor: showMainWindow)
+            }.disabled(!model.hasImage || !model.canStartCapture)
+            Menu(L10n.visualEffectTools) {
+                CaptureToolMenuItems(model: model, tools: [.mosaic, .blur, .spotlight], showEditor: showMainWindow)
+            }.disabled(!model.hasImage || !model.canStartCapture)
+            Menu(L10n.recognitionMenu) {
+                CaptureRecognitionMenuItems(model: model, showEditor: showMainWindow, usesKeyboardShortcuts: true)
             }
-
-            Divider()
-
-            Button(L10n.runOCR) {
-                model.recognizeText()
-            }
-            .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(!model.hasImage || model.isRecognizingText)
-
-            Button(L10n.copyOCRText) {
-                model.copyOCRText()
-            }
-            .keyboardShortcut("c", modifiers: [.command, .option])
-            .disabled(model.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            Button(L10n.clearOCRText) {
-                model.clearOCRText()
-            }
-            .disabled(model.ocrText.isEmpty)
         }
     }
 }
@@ -242,180 +103,235 @@ struct CaptureLabMenuBarView: View {
     let showHistory: () -> Void
     let showShortcutSettings: () -> Void
     let showR2Settings: () -> Void
+    let showRecognitionSettings: () -> Void
     var showWorkflowSettings: () -> Void = {}
 
     var body: some View {
-        PrecisionCaptureMenu(model: model)
-        ScrollingCaptureMenu(model: model)
+        // Display the Carbon shortcut without registering another SwiftUI binding.
+        CaptureBasicMenuItems(model: model, showEditor: showMainWindow,
+            regionTitle: L10n.captureRegion + "  " + shortcutStore.captureShortcut.displayTitle)
+        Menu(L10n.moreCapture) {
+            CaptureMoreMenuItems(model: model, showEditor: showMainWindow)
+        }.disabled(!model.canStartCapture)
+        Menu(L10n.recognitionMenu) {
+            CaptureRecognitionMenuItems(model: model, showEditor: showMainWindow)
+        }
         Divider()
-        Button(L10n.workflowSettings, action: showWorkflowSettings)
-        CaptureOverlayMenu(controller: model.overlayController)
-        CapturePinMenu()
-        Divider()
-        Button(L10n.pasteImage) {
-            model.pasteImage()
-            if model.hasImage { showMainWindow() }
-        }
-        .disabled(model.isCapturing)
-        Button(L10n.showCaptureLab, action: showMainWindow)
-        Button(L10n.historyBrowserTitle, action: showHistory)
-
-        Divider()
-
-        Button(L10n.captureRegion) {
-            model.capture(.region, onSuccess: showMainWindow)
-        }
-        .disabled(model.isCapturing)
-
-        Button(L10n.captureFullScreen) {
-            model.capture(.fullScreen, onSuccess: showMainWindow)
-        }
-        .disabled(model.isCapturing)
-
-        Button(L10n.captureWindow) {
-            model.capture(.window, onSuccess: showMainWindow)
-        }
-        .disabled(model.isCapturing)
-
-        Menu(L10n.captureDelayedMenu) {
-            Button(L10n.captureDelayedRegion(3)) {
-                model.capture(.delayedRegion(seconds: 3), onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-
-            Button(L10n.captureDelayedRegion(5)) {
-                model.capture(.delayedRegion(seconds: 5), onSuccess: showMainWindow)
-            }
-            .disabled(model.isCapturing)
-        }
-
-        Button(L10n.shortcutConfiguration) {
-            showShortcutSettings()
-        }
-
-        Button(L10n.cloudflareR2SettingsMenuItem) {
-            showR2Settings()
-        }
-
-        Text(L10n.shortcutSummary(shortcutStore.captureShortcut.displayTitle))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-        if let registrationError = globalHotKeyController.registrationError {
-            Text(registrationError)
-                .font(.caption)
-                .foregroundStyle(.red)
-        }
-
-        Button(L10n.openImage) {
-            showMainWindow()
-            model.openImage()
-        }
-        .disabled(model.isCapturing)
-
-        Menu(L10n.recentCaptures) {
+        Button(L10n.openEditor, action: showMainWindow).disabled(model.isCapturing)
+        Menu(L10n.recentAndHistory) {
             if model.historyItems.isEmpty {
                 Text(L10n.noRecentCaptures)
             } else {
                 ForEach(Array(model.historyItems.prefix(8))) { item in
-                    Menu(item.displayTitle) {
-                        Button(L10n.openRecentCapture) {
-                            showMainWindow()
-                            model.openHistoryItem(item)
-                        }
-
-                        Button(L10n.copyRecentCapture) {
-                            model.copyHistoryItem(item)
-                        }
-
-                        Button(L10n.saveRecentCapture) {
-                            model.saveHistoryItem(item)
-                        }
-
-                        Button(L10n.uploadRecentCapture) {
-                            model.uploadHistoryItem(item)
-                        }
-                        .disabled(model.isUploading)
-
-                        Button(L10n.historyPin) {
-                            model.pinHistoryItem(item)
-                        }
-                    }
+                    Button(item.displayTitle) {
+                        showMainWindow()
+                        model.openHistoryItem(item)
+                    }.disabled(!model.canStartCapture)
                 }
+                Divider()
             }
+            Button(L10n.showAllHistory, action: showHistory).disabled(model.isCapturing)
         }
-
-        Button(model.isCheckingForUpdates ? L10n.checkingForUpdates : L10n.checkForUpdates) {
-            model.checkForUpdates()
-        }
-        .disabled(model.isCheckingForUpdates)
-
+        Menu(L10n.openAndPaste) {
+            CaptureOpenMenuItems(model: model, showEditor: showMainWindow)
+            CapturePasteImageButton(model: model, showEditor: showMainWindow)
+        }.disabled(!model.canStartCapture)
+        Menu(L10n.currentImageMenu) {
+            Button(L10n.copyImage) { model.copyRenderedImage() }
+            CaptureSaveMenuItems(model: model, showEditor: showMainWindow)
+            Divider()
+            CaptureUploadButton(model: model)
+            Button(L10n.pinImage, action: model.pinCurrentCapture)
+        }.disabled(!model.hasImage || !model.canStartCapture)
+        Menu(L10n.overlaysAndPins) {
+            CaptureOverlayMenu(controller: model.overlayController)
+            Divider()
+            CapturePinMenu()
+        }.disabled(model.isCapturing)
         Divider()
-
-        Menu(L10n.toolsMenu) {
-            ForEach(CaptureTool.allCases) { tool in
-                Button {
-                    showMainWindow()
-                    model.selectedTool = tool
-                } label: {
-                    Label(tool.title, systemImage: tool.systemImage)
-                }
-                .disabled(!model.hasImage && tool != .select)
-            }
+        Menu(L10n.settingsMenu) {
+            Button(L10n.captureAndHistorySettings, action: showWorkflowSettings)
+            CaptureOtherSettingsItems(showShortcutSettings: showShortcutSettings,
+                showRecognitionSettings: showRecognitionSettings, showR2Settings: showR2Settings)
         }
-
-        Button(L10n.undoEdit) {
-            showMainWindow()
-            model.undoAnnotation()
+        if let error = globalHotKeyController.registrationError {
+            Button(L10n.shortcutUnavailable, action: showShortcutSettings)
+                .help(error)
+                .accessibilityLabel(L10n.shortcutUnavailable + " " + error)
         }
-        .disabled(!model.canUndoAnnotation)
+        CaptureUpdateButton(model: model)
+        Button(L10n.quitCaptureLab) { NSApp.terminate(nil) }
+    }
+}
 
-        Button(L10n.redoMarkup) {
-            showMainWindow()
-            model.redoAnnotation()
+private struct CaptureBasicMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showEditor: () -> Void
+    var regionTitle = L10n.captureRegion
+
+    var body: some View {
+        Button(regionTitle) { model.capture(.region, onSuccess: showEditor) }
+            .disabled(!model.canStartCapture)
+        Button(L10n.captureWindow) { model.capture(.window, onSuccess: showEditor) }
+            .disabled(!model.canStartCapture)
+        Button(L10n.captureFullScreen) { model.capture(.fullScreen, onSuccess: showEditor) }
+            .disabled(!model.canStartCapture)
+    }
+}
+
+private struct CaptureMoreMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showEditor: () -> Void
+    var includesLastRegion = true
+
+    var body: some View {
+        if includesLastRegion {
+            Button(L10n.lastRegion) { model.capture(.lastRegion, onSuccess: showEditor) }
         }
-        .disabled(!model.canRedoAnnotation)
+        Button(L10n.frozenRegion) { model.capture(.frozenRegion, onSuccess: showEditor) }
+        Button(L10n.captureDelayedRegion(3)) { model.capture(.delayedRegion(seconds: 3), onSuccess: showEditor) }
+        Button(L10n.captureDelayedRegion(5)) { model.capture(.delayedRegion(seconds: 5), onSuccess: showEditor) }
+        Button(L10n.captureLauncher) { model.performCaptureAction(.launcher) }
+    }
+}
 
-        Button(L10n.clearMarkups) {
-            showMainWindow()
-            model.clearAnnotations()
-        }
-        .disabled(model.annotations.isEmpty)
+private struct CaptureOpenMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showEditor: () -> Void
+    var usesKeyboardShortcuts = false
 
-        Divider()
+    var body: some View {
+        Button(L10n.openImage) {
+            showEditor()
+            model.openImage()
+        }.applicationMenuShortcut("o", enabled: usesKeyboardShortcuts)
+            .disabled(!model.canStartCapture)
+        Button(L10n.openProjectMenu) {
+            showEditor()
+            model.openProject()
+        }.applicationMenuShortcut("o", modifiers: [.command, .shift], enabled: usesKeyboardShortcuts)
+            .disabled(!model.canStartCapture)
+    }
+}
 
-        Button(L10n.runOCR) {
-            showMainWindow()
-            model.recognizeText()
-        }
-        .disabled(!model.hasImage || model.isRecognizingText)
+private struct CapturePasteImageButton: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showEditor: () -> Void
+    var body: some View {
+        Button(L10n.pasteImage) {
+            model.pasteImage()
+            if model.hasImage { showEditor() }
+        }.disabled(!model.canStartCapture)
+    }
+}
 
-        Button(L10n.copyEditedImage) {
-            model.copyRenderedImage()
-        }
-        .disabled(!model.hasImage)
+private struct CaptureSaveMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showEditor: () -> Void
+    var usesKeyboardShortcuts = false
 
-        Button(L10n.pinImage) {
-            model.pinCurrentCapture()
-        }
-        .disabled(!model.hasImage)
-
-        Button(model.isUploading ? L10n.uploading : L10n.uploadEditedImage) {
-            model.uploadRenderedImage()
-        }
-        .disabled(!model.hasImage || model.isUploading)
-
-        Button(L10n.saveEditedImage) {
-            showMainWindow()
+    var body: some View {
+        Button(L10n.savePNGMenu) {
+            showEditor()
             model.saveRenderedImage()
-        }
-        .disabled(!model.hasImage)
+        }.applicationMenuShortcut("s", enabled: usesKeyboardShortcuts)
+            .disabled(!model.hasImage || !model.canStartCapture)
+        Button(L10n.exportImageMenu) {
+            showEditor()
+            model.prepareExport()
+        }.applicationMenuShortcut("e", enabled: usesKeyboardShortcuts)
+            .disabled(!model.hasImage || !model.canStartCapture)
+        Button(L10n.saveProjectMenu) {
+            showEditor()
+            model.saveProject()
+        }.applicationMenuShortcut("s", modifiers: [.command, .shift], enabled: usesKeyboardShortcuts)
+            .disabled(!model.hasImage || !model.canStartCapture)
+    }
+}
 
+private struct CaptureShareMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    var usesKeyboardShortcuts = false
+    var body: some View {
+        Button(L10n.copyImage) { model.copyRenderedImage() }
+            .applicationMenuShortcut("c", modifiers: [.command, .shift], enabled: usesKeyboardShortcuts)
+        CaptureUploadButton(model: model, usesKeyboardShortcuts: usesKeyboardShortcuts)
+    }
+}
+
+private struct CaptureUploadButton: View {
+    @ObservedObject var model: CaptureLabViewModel
+    var usesKeyboardShortcuts = false
+    var body: some View {
+        Button(model.isUploading ? L10n.uploading : L10n.uploadToR2) { model.uploadRenderedImage() }
+            .applicationMenuShortcut("u", modifiers: [.command, .shift], enabled: usesKeyboardShortcuts)
+            .disabled(model.isUploading || !model.hasImage || !model.canStartCapture)
+    }
+}
+
+private struct CaptureRecognitionMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let showEditor: () -> Void
+    var usesKeyboardShortcuts = false
+    var body: some View {
+        Button(L10n.directText) { model.performCaptureAction(.text) }.disabled(!model.canStartCapture)
+        Button(L10n.directQRCode) { model.performCaptureAction(.qrCode) }.disabled(!model.canStartCapture)
         Divider()
+        Button(L10n.recognizeCurrentImage) {
+            showEditor()
+            model.recognizeText()
+        }.applicationMenuShortcut("r", modifiers: [.command, .shift], enabled: usesKeyboardShortcuts)
+            .disabled(!model.hasImage || model.isRecognizingText || !model.canStartCapture)
+        Button(L10n.copyOCRText, action: model.copyOCRText)
+            .applicationMenuShortcut("c", modifiers: [.command, .option], enabled: usesKeyboardShortcuts)
+            .disabled(model.ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canStartCapture)
+        Button(L10n.clearOCRText, action: model.clearOCRText)
+            .disabled(model.ocrText.isEmpty || !model.canStartCapture)
+    }
+}
 
-        Button(L10n.quitCaptureLab) {
-            NSApp.terminate(nil)
+private struct CaptureToolMenuItems: View {
+    @ObservedObject var model: CaptureLabViewModel
+    let tools: [CaptureTool]
+    let showEditor: () -> Void
+    var body: some View {
+        ForEach(tools) { tool in
+            Button {
+                showEditor()
+                CaptureEditingSession.commitPendingTextEdits()
+                model.selectedTool = tool
+            } label: {
+                Label(tool.title, systemImage: tool.systemImage)
+            }.keyboardShortcut(tool.menuShortcut, modifiers: .command)
+                .disabled(!model.canStartCapture || (!model.hasImage && tool != .select))
         }
+    }
+}
+
+private struct CaptureOtherSettingsItems: View {
+    let showShortcutSettings: () -> Void
+    let showRecognitionSettings: () -> Void
+    let showR2Settings: () -> Void
+    var body: some View {
+        Button(L10n.shortcutConfiguration, action: showShortcutSettings)
+        Button(L10n.recognitionLanguages, action: showRecognitionSettings)
+        Button(L10n.cloudflareR2SettingsMenuItem, action: showR2Settings)
+    }
+}
+
+private struct CaptureUpdateButton: View {
+    @ObservedObject var model: CaptureLabViewModel
+    var body: some View {
+        Button(model.isCheckingForUpdates ? L10n.checkingForUpdates : L10n.checkForUpdates, action: model.checkForUpdates)
+            .disabled(!model.canStartCapture)
+    }
+}
+
+private extension View {
+    @ViewBuilder func applicationMenuShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = .command,
+                                               enabled: Bool) -> some View {
+        if enabled { keyboardShortcut(key, modifiers: modifiers) }
+        else { self }
     }
 }
 
@@ -466,15 +382,5 @@ private struct CapturePinMenu: View {
     var body: some View {
         Button(L10n.pinUnlockAll, action: controller.unlockAll).disabled(controller.windows.isEmpty)
         Button(L10n.pinCloseAll, action: controller.closeAll).disabled(controller.windows.isEmpty)
-    }
-}
-
-struct ScrollingCaptureMenu: View {
-    @ObservedObject var model: CaptureLabViewModel
-    var body: some View {
-        Menu(L10n.text(en: "Scrolling Capture", zh: "滚动长截图")) {
-            Button(L10n.text(en: "Vertical…", zh: "纵向…")) { model.captureScrolling(.vertical) }
-            Button(L10n.text(en: "Horizontal…", zh: "横向…")) { model.captureScrolling(.horizontal) }
-        }.disabled(model.isCapturing)
     }
 }
