@@ -380,15 +380,23 @@ final class CaptureLabViewModel: ObservableObject {
         return preview
     }
 
-    func commitObjects(layers: [CaptureImageLayer], annotations updatedAnnotations: [CaptureAnnotation]) {
+    @discardableResult
+    func commitObjects(layers: [CaptureImageLayer], annotations updatedAnnotations: [CaptureAnnotation]) -> Bool {
         CaptureEditingSession.commitPendingTextEdits()
-        guard var updated = document, updated.imageLayers != layers || annotations != updatedAnnotations else { return }
+        guard var updated = document else { return false }
+        guard updated.imageLayers != layers || annotations != updatedAnnotations else { return true }
         do { try CaptureLayerImport.validate(layers) }
-        catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle); return }
+        catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle); return false }
+        let previousResources = Dictionary(uniqueKeysWithValues: updated.imageLayers.map { ($0.id, $0.pngData) })
+        let resourcesChanged = layers.count != previousResources.count
+            || layers.contains { previousResources[$0.id] != $0.pngData }
+        updated.imageLayers = layers
+        // Geometry-only gestures reuse immutable resources. Encode only when
+        // resources change, including duplication, before creating an undo unit.
+        guard !resourcesChanged || canStoreProject(updated, annotations: updatedAnnotations) else { return false }
         appendUndo(EditSnapshot(document: document, annotations: annotations))
         annotationRedoStack.removeAll()
         invalidateDocumentActivities()
-        updated.imageLayers = layers
         updated.id = UUID()
         isApplyingAnnotationHistory = true
         document = updated
@@ -398,6 +406,19 @@ final class CaptureLabViewModel: ObservableObject {
         cropSelection = nil
         selectedTool = .select
         ocrText = ""
+        return true
+    }
+
+    private func canStoreProject(_ document: CaptureDocument, annotations: [CaptureAnnotation]) -> Bool {
+        do {
+            // The actual encoder accounts for base pixels, added images, even
+            // inactive custom backgrounds, JSON/Base64 overhead and annotations.
+            _ = try CaptureProjectStore.encode(document: document, annotations: annotations)
+            return true
+        } catch {
+            reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
+            return false
+        }
     }
 
     func applyPresentation(_ presentation: CapturePresentation) {
@@ -407,7 +428,9 @@ final class CaptureLabViewModel: ObservableObject {
             reportFailure(L10n.text(en: "The background layout exceeds the output size limit.", zh: "背景布局超出输出尺寸限制。"), title: L10n.imageExportFailed)
             return
         }
+        let resourcesChanged = updated.presentation.customBackgroundData != presentation.customBackgroundData
         updated.presentation = presentation
+        guard !resourcesChanged || canStoreProject(updated, annotations: annotations) else { return }
         updated.id = UUID()
         applyDocumentEdit(updated)
         showsOutputPreview = true
@@ -755,7 +778,7 @@ final class CaptureLabViewModel: ObservableObject {
             if let document {
                 let added = try CaptureLayerImport.layers(from: pasteboard, canvasSize: document.sourcePixelSize,
                     existing: document.imageLayers, visibleNormalizedRect: document.visibleSourceRect)
-                commitObjects(layers: document.imageLayers + added, annotations: annotations)
+                guard commitObjects(layers: document.imageLayers + added, annotations: annotations) else { return }
                 selectedObjects = Set(added.map { .image($0.id) })
                 isEditingObjects = true
                 showsOutputPreview = false
@@ -800,14 +823,15 @@ final class CaptureLabViewModel: ObservableObject {
                 layers.append(layer); added.append(layer)
             }
             if isNew {
+                target.imageLayers = layers
+                guard canStoreProject(target, annotations: []) else { return false }
                 invalidateDocumentActivities()
                 resetAnnotations()
-                target.imageLayers = layers
                 document = target
                 currentHistoryItem = nil
                 finishEditingError = nil
                 ocrText = ""
-            } else { commitObjects(layers: layers, annotations: annotations) }
+            } else if !commitObjects(layers: layers, annotations: annotations) { return false }
             selectedObjects = Set(added.map { .image($0.id) })
             isEditingObjects = !added.isEmpty
             showsOutputPreview = false
@@ -835,7 +859,7 @@ final class CaptureLabViewModel: ObservableObject {
             if let document {
                 let added = try CaptureLayerImport.layers(from: panel.urls, canvasSize: document.sourcePixelSize,
                     existing: document.imageLayers, visibleNormalizedRect: document.visibleSourceRect)
-                commitObjects(layers: document.imageLayers + added, annotations: annotations)
+                guard commitObjects(layers: document.imageLayers + added, annotations: annotations) else { return }
                 selectedObjects = Set(added.map { .image($0.id) })
                 isEditingObjects = true
                 showsOutputPreview = false
@@ -848,6 +872,7 @@ final class CaptureLabViewModel: ObservableObject {
                     imported.imageLayers = try CaptureLayerImport.layers(from: Array(panel.urls.dropFirst()),
                         canvasSize: imported.sourcePixelSize, existing: [])
                 }
+                guard canStoreProject(imported, annotations: []) else { return }
                 invalidateDocumentActivities()
                 resetAnnotations()
                 document = imported
@@ -1539,7 +1564,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.1"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

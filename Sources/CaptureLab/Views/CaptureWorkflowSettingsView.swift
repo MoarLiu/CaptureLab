@@ -55,6 +55,11 @@ struct CaptureWorkflowSettingsView: View {
                 Text(L10n.text(en: "Captures exceeding either limit are removed. Changes show the number affected before deleting anything.",
                     zh: "超过数量或期限的记录会被清理。应用设置前会显示本次将清理的数量。"))
                     .font(.caption).foregroundStyle(.secondary)
+                if !history.recoveryProtectedIDs.isEmpty {
+                    Text(L10n.text(en: "Recovered captures are protected from automatic cleanup. Apply retention here to review which ones to remove.",
+                        zh: "从损坏或丢失的索引中恢复的截图暂不自动清理。重新应用保留设置可确认需要清理的记录。"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
                     Button(L10n.text(en: "Apply Retention", zh: "应用保留设置"), action: applyRetention)
                     if didSaveRetention { Text(L10n.text(en: "Saved", zh: "已保存")).foregroundStyle(.secondary) }

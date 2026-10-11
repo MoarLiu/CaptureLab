@@ -4,6 +4,25 @@ import XCTest
 
 @MainActor
 final class CaptureImageLayerTests: XCTestCase {
+    func testRejectedNativeDuplicationPreservesCanvasAndSelection() throws {
+        _ = NSApplication.shared
+        let image = try layer(.red, rect: CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.3))
+        var document = CaptureDocument(image: try solid(.white), sourceURL: nil, createdAt: Date())
+        document.imageLayers = [image]
+        let canvas = CaptureLayersNSCanvasView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let selection: Set<CaptureObjectID> = [.image(image.id)]
+        canvas.synchronize(document: document, annotations: [], selection: selection, zoom: .fit)
+        canvas.onCommit = { _, _ in false }
+        var selectionChanges = 0
+        canvas.onSelectionChanged = { _ in selectionChanges += 1 }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: 0, context: nil, characters: "d", charactersIgnoringModifiers: "d", isARepeat: false, keyCode: 2))
+        canvas.keyDown(with: event)
+        XCTAssertEqual(canvas.layers, [image])
+        XCTAssertEqual(canvas.selection, selection)
+        XCTAssertEqual(selectionChanges, 0)
+    }
+
     func testLayerResourcesAndPlacementsRoundTripWithoutFlattening() throws {
         let image = try solid(.red, width: 20, height: 10)
         let data = try XCTUnwrap(image.captureLabPNGData())
@@ -150,7 +169,7 @@ final class CaptureImageLayerTests: XCTestCase {
         window.contentView = canvas
         canvas.synchronize(document: document, annotations: [annotation], selection: [.image(image.id), .annotation(annotation.id)], zoom: .fit)
         var commits = 0
-        canvas.onCommit = { _, _ in commits += 1 }
+        canvas.onCommit = { _, _ in commits += 1; return true }
         let start = canvas.viewPoint(for: CGPoint(x: 0.2, y: 0.3))
         let finish = canvas.viewPoint(for: CGPoint(x: 0.3, y: 0.4))
         canvas.mouseDown(with: try mouse(.leftMouseDown, at: start, canvas: canvas, window: window))
@@ -174,7 +193,7 @@ final class CaptureImageLayerTests: XCTestCase {
         let window = NSWindow(contentRect: canvas.bounds, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = canvas
         canvas.synchronize(document: document, annotations: [], selection: [.image(image.id)], zoom: .fit)
-        var commits = 0; canvas.onCommit = { _, _ in commits += 1 }
+        var commits = 0; canvas.onCommit = { _, _ in commits += 1; return true }
         let start = canvas.viewPoint(for: CGPoint(x: 0.3, y: 0.3))
         canvas.mouseDown(with: try mouse(.leftMouseDown, at: start, canvas: canvas, window: window))
         canvas.mouseDragged(with: try mouse(.leftMouseDragged, at: canvas.viewPoint(for: CGPoint(x: 0.5, y: 0.5)), canvas: canvas, window: window))
@@ -197,7 +216,7 @@ final class CaptureImageLayerTests: XCTestCase {
         let window = NSWindow(contentRect: canvas.bounds, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = canvas
         canvas.synchronize(document: document, annotations: [], selection: [.image(image.id)], zoom: .fit)
-        var commits = 0; canvas.onCommit = { _, _ in commits += 1 }
+        var commits = 0; canvas.onCommit = { _, _ in commits += 1; return true }
         let corner = canvas.viewPoint(for: CGPoint(x: 0.4, y: 0.4))
         let enlarged = canvas.viewPoint(for: CGPoint(x: 0.45, y: 0.45))
         canvas.mouseDown(with: try mouse(.leftMouseDown, at: corner, canvas: canvas, window: window))
@@ -251,7 +270,7 @@ final class CaptureImageLayerTests: XCTestCase {
         let window = NSWindow(contentRect: canvas.bounds, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = canvas
         canvas.synchronize(document: document, annotations: [], selection: [.image(image.id)], zoom: .fit)
-        var commits = 0; canvas.onCommit = { _, _ in commits += 1 }
+        var commits = 0; canvas.onCommit = { _, _ in commits += 1; return true }
         let top = canvas.viewPoint(for: CGPoint(x: 0.3, y: 0))
         let handle = CGPoint(x: top.x, y: top.y - 22)
         let center = canvas.viewPoint(for: CGPoint(x: 0.3, y: 0.1))

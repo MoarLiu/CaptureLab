@@ -4,6 +4,27 @@ import XCTest
 
 @MainActor
 final class CaptureCounterResizeTests: XCTestCase {
+    func testImportedMaximumCounterUsesAnUnusedPositiveLabelWithoutOverflow() throws {
+        let image = try sourceImage()
+        let document = CaptureDocument(image: image, sourceURL: nil, createdAt: Date())
+        for labels in [[String(Int.max), "1", "2"], [String(Int.max - 1)], ["12"]] {
+            let annotations = labels.map { label in
+                CaptureAnnotation(kind: .counter, normalizedRect: CGRect(x: 0.05, y: 0.05, width: 0.05, height: 0.05), text: label)
+            }
+            let reopened = try CaptureProjectStore.decode(CaptureProjectStore.encode(document: document, annotations: annotations))
+            let canvas = try makeCanvas()
+            canvas.setDocument(reopened.document)
+            canvas.annotations = reopened.annotations
+            canvas.selectedTool = .counter
+            drag(canvas, from: CGPoint(x: 500, y: 300), to: CGPoint(x: 540, y: 340))
+            XCTAssertEqual(canvas.annotations.count, labels.count + 1)
+            let expected = labels.count == 3 ? "3" : labels[0] == "12" ? "13" : String(Int.max)
+            XCTAssertEqual(canvas.annotations.last?.text, expected)
+            XCTAssertEqual(Array(canvas.annotations.dropLast()), reopened.annotations)
+            XCTAssertNoThrow(try CaptureProjectStore.encode(document: document, annotations: canvas.annotations))
+        }
+    }
+
     func testResizingCounterKeepsEveryDigitInsideCircleInExport() throws {
         let canvas = try makeCanvas()
         canvas.annotations = [counter("12", side: 160)]

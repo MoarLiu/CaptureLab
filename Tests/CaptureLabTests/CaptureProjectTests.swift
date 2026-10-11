@@ -5,6 +5,52 @@ import XCTest
 
 @MainActor
 final class CaptureProjectTests: XCTestCase {
+    func testCombinedResourceBudgetRejectsImportsDuplicatesAndBackgroundBeforeMutation() throws {
+        let fixture = try ProjectFixture()
+        defer { fixture.cleanUp() }
+        // High-entropy pixels reproduce the real encoded-size boundary without
+        // fake limits: each PNG is about 53 MB, within all per-image limits.
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4200, pixelsHigh: 4200,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0))
+        arc4random_buf(try XCTUnwrap(bitmap.bitmapData), bitmap.bytesPerRow * bitmap.pixelsHigh)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertLessThan(png.count * 2, CaptureLayerImport.maximumBytes)
+        let model = fixture.model()
+        XCTAssertTrue(model.importImageData(png))
+        XCTAssertTrue(model.addImageResources([(data: png, name: "first.png")]))
+        let before = try XCTUnwrap(model.document)
+        let selection = model.selectedObjects
+        let undo = model.canUndoAnnotation
+        let redo = model.canRedoAnnotation
+
+        XCTAssertFalse(model.addImageResources([(data: png, name: "second.png")]))
+        XCTAssertEqual(model.document?.id, before.id)
+        XCTAssertEqual(model.document?.imageLayers, before.imageLayers)
+        XCTAssertEqual(model.selectedObjects, selection)
+        XCTAssertEqual(model.canUndoAnnotation, undo)
+        XCTAssertEqual(model.canRedoAnnotation, redo)
+        XCTAssertTrue(model.statusMessage.contains(CaptureProjectError.tooLarge.localizedDescription))
+
+        let duplicated = try CaptureObjectOperations.duplicated(layers: before.imageLayers, annotations: [], selection: selection)
+        XCTAssertFalse(model.commitObjects(layers: duplicated.layers, annotations: duplicated.annotations))
+        XCTAssertEqual(model.document?.id, before.id)
+        var background = before.presentation
+        background.background = .image
+        background.customBackgroundData = png
+        background.customBackgroundName = "background.png"
+        model.applyPresentation(background)
+        XCTAssertEqual(model.document?.id, before.id)
+        XCTAssertEqual(model.document?.presentation, before.presentation)
+
+        XCTAssertTrue(model.preserveDocumentBeforeReplacement())
+        let saved = try XCTUnwrap(model.historyItems.first)
+        let reopened = try CaptureProjectStore.decode(XCTUnwrap(model.historyStore.editableSnapshot(for: saved).project))
+        XCTAssertEqual(reopened.document.imageLayers, before.imageLayers)
+        model.undoAnnotation()
+        XCTAssertTrue(try XCTUnwrap(model.document).imageLayers.isEmpty, "Rejected edits must not append undo entries")
+    }
+
     func testProjectRoundTripPreservesObjectsGeometryAndRetinaSourceWithoutPathsOrUndo() throws {
         let image = try ProjectFixture.image()
         var document = CaptureDocument(image: image, sourceURL: URL(fileURLWithPath: "/private/fixture/user/source.png"),

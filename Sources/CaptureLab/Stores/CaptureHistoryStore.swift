@@ -34,11 +34,19 @@ final class CaptureHistoryStore: ObservableObject {
     @Published private(set) var items: [CaptureHistoryItem]
     @Published private(set) var loadError: CaptureHistoryError?
     @Published private(set) var retention: CaptureHistoryRetention = .default
+    @Published private(set) var recoveryProtectedIDs: Set<UUID> = []
 
     private struct MetadataDocument: Codable, Equatable {
         var schemaVersion: Int
         var items: [CaptureHistoryItem]
         var retention: CaptureHistoryRetention? = nil
+        var recoveryProtectedIDs: Set<UUID>? = nil
+    }
+
+    // A damaged item must not prevent recovering an intact retention policy.
+    private struct RetentionMetadata: Decodable {
+        var retention: CaptureHistoryRetention?
+        var recoveryProtectedIDs: Set<UUID>?
     }
 
     private let environment: [String: String]
@@ -71,26 +79,21 @@ final class CaptureHistoryStore: ObservableObject {
             try withExclusiveHistoryLock {
                 let exists = fileManager.fileExists(atPath: metadataURL.path)
                 let loaded: [CaptureHistoryItem]
-                do {
-                    if exists {
+                if exists {
+                    do {
                         retention = try readRetention()
                         loaded = try Self.loadItems(metadataURL: metadataURL, fileManager: fileManager, decoder: decoder)
-                    } else {
-                        loaded = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
+                    } catch {
+                        loadError = .metadataLoadFailed(error.localizedDescription)
+                        _ = try? recoverAndPersistItems()
+                        return
                     }
-                } catch {
-                    items = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
-                    loadError = .metadataLoadFailed(error.localizedDescription)
-                    // Only reclaim files after recovery metadata is durable.
-                    do {
-                        try persist(items)
-                        Self.removeUnreferencedResources(retaining: items, historyDirectory: historyDirectory, fileManager: fileManager)
-                    } catch { /* Keep all recoverable images for the next retry. */ }
-                    return
+                } else {
+                    loaded = try recoverAndPersistItems()
                 }
                 items = loaded
-                let retained = retention.retaining(loaded, now: now())
-                if (!exists && !loaded.isEmpty) || retained != loaded {
+                let retained = retainingAutomatically(loaded)
+                if retained != loaded {
                     do { try persist(retained) }
                     catch {
                         synchronizeAfterMetadataFailure(fallback: loaded)
@@ -126,7 +129,7 @@ final class CaptureHistoryStore: ObservableObject {
             // store was initialized. Always merge against the current on-disk
             // snapshot while holding the cross-process lock instead of letting
             // stale in-memory state overwrite it.
-            let currentItems = latestItemsFromDisk()
+            let currentItems = try latestItemsFromDisk()
             retention = try readRetention()
             let id = UUID()
             let fileName = "capture-\(Self.fileTimestampFormatter.string(from: createdAt))-\(id.uuidString).png"
@@ -141,7 +144,7 @@ final class CaptureHistoryStore: ObservableObject {
                 pixelHeight: Int(pixelSize.height)
             )
             let allItems = [item] + currentItems.filter { $0.id != item.id }
-            let retainedItems = retention.retaining(allItems, now: now())
+            let retainedItems = retainingAutomatically(allItems)
             do {
                 try persist(retainedItems)
             } catch {
@@ -199,7 +202,7 @@ final class CaptureHistoryStore: ObservableObject {
             let item = CaptureHistoryItem(id: id, createdAt: stamp, fileName: imageURL.lastPathComponent,
                                           pixelWidth: Int(pixelSize.width), pixelHeight: Int(pixelSize.height),
                                           projectFileName: projectURL.lastPathComponent, modifiedAt: now())
-            let updated = retention.retaining([item] + current.filter { $0.id != id }, now: now())
+            let updated = retainingAutomatically([item] + current.filter { $0.id != id })
             do { try persist(updated) }
             catch {
                 synchronizeAfterMetadataFailure(fallback: current)
@@ -250,19 +253,10 @@ final class CaptureHistoryStore: ObservableObject {
                         decoder: decoder
                     )
                 } else {
-                    refreshedItems = Self.recoverItemsFromDirectory(
-                        historyDirectory: historyDirectory,
-                        fileManager: fileManager
-                    )
-                    do {
-                        try persist(refreshedItems)
-                    } catch {
-                        synchronizeAfterMetadataFailure(fallback: refreshedItems)
-                        throw error
-                    }
+                    refreshedItems = try recoverAndPersistItems()
                 }
                 retention = try readRetention()
-                let retained = retention.retaining(refreshedItems, now: now())
+                let retained = retainingAutomatically(refreshedItems)
                 if retained != refreshedItems {
                     do { try persist(retained) }
                     catch {
@@ -289,7 +283,7 @@ final class CaptureHistoryStore: ObservableObject {
     /// write cannot delete an image that is still part of the durable snapshot.
     func remove(_ item: CaptureHistoryItem) throws {
         try withExclusiveHistoryLock {
-            let currentItems = latestItemsFromDisk()
+            let currentItems = try latestItemsFromDisk()
             let retainedItems = currentItems.filter { $0.id != item.id }
             guard retainedItems.count != currentItems.count else {
                 items = currentItems
@@ -344,7 +338,7 @@ final class CaptureHistoryStore: ObservableObject {
         }
 
         return try withExclusiveHistoryLock {
-            let currentItems = latestItemsFromDisk()
+            let currentItems = try latestItemsFromDisk()
             guard let currentItem = currentItems.first(where: { $0.id == item.id }) else {
                 items = currentItems
                 return nil
@@ -436,17 +430,45 @@ final class CaptureHistoryStore: ObservableObject {
     }
 
     private func readRetention() throws -> CaptureHistoryRetention {
-        guard fileManager.fileExists(atPath: metadataURL.path) else { return .default }
-        let document = try decoder.decode(MetadataDocument.self, from: Data(contentsOf: metadataURL))
+        guard fileManager.fileExists(atPath: metadataURL.path) else { return retention }
+        let document = try decoder.decode(RetentionMetadata.self, from: Data(contentsOf: metadataURL))
+        recoveryProtectedIDs = document.recoveryProtectedIDs ?? []
         return (document.retention ?? .default).validated
     }
 
-    private func persist(_ items: [CaptureHistoryItem], policy: CaptureHistoryRetention? = nil) throws {
+    private func retainingAutomatically(_ items: [CaptureHistoryItem]) -> [CaptureHistoryItem] {
+        let retainedIDs = Set(retention.retaining(items, now: now()).map(\.id)).union(recoveryProtectedIDs)
+        return items.filter { retainedIDs.contains($0.id) }
+    }
+
+    /// A reconstructed index cannot authorize deletion. Persist protection with
+    /// the recovered entries so refreshes, other writers and restarts keep them
+    /// until an explicit retention application (or individual deletion).
+    private func recoverAndPersistItems() throws -> [CaptureHistoryItem] {
+        let recovered = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
+        items = recovered
+        let policy = (try? readRetention()) ?? retention
+        let protected = Set(recovered.map(\.id))
+        guard !recovered.isEmpty || fileManager.fileExists(atPath: metadataURL.path) else { return recovered }
+        do { try persist(recovered, policy: policy, protecting: protected) }
+        catch {
+            synchronizeAfterMetadataFailure(fallback: recovered)
+            throw error
+        }
+        Self.removeUnreferencedResources(retaining: recovered, historyDirectory: historyDirectory, fileManager: fileManager)
+        return recovered
+    }
+
+    private func persist(_ items: [CaptureHistoryItem], policy: CaptureHistoryRetention? = nil,
+                         protecting protectedIDs: Set<UUID>? = nil) throws {
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
         let effective = policy ?? ((try? readRetention()) ?? retention)
-        let document = MetadataDocument(schemaVersion: 3, items: items, retention: effective)
+        let protected = (protectedIDs ?? recoveryProtectedIDs).intersection(items.map(\.id))
+        let document = MetadataDocument(schemaVersion: 3, items: items, retention: effective,
+                                        recoveryProtectedIDs: protected.isEmpty ? nil : protected)
         try metadataWriter(encoder.encode(document), metadataURL)
         retention = effective
+        recoveryProtectedIDs = protected
     }
 
     struct RetentionPreview {
@@ -472,7 +494,7 @@ final class CaptureHistoryStore: ObservableObject {
             guard removing.isSubset(of: preview.removingIDs) else {
                 return RetentionPreview(policy: preview.policy, removingIDs: removing)
             }
-            do { try persist(retained, policy: preview.policy) }
+            do { try persist(retained, policy: preview.policy, protecting: []) }
             catch {
                 synchronizeAfterMetadataFailure(fallback: current)
                 throw error
@@ -485,7 +507,7 @@ final class CaptureHistoryStore: ObservableObject {
     }
 
     private func readableItems() throws -> [CaptureHistoryItem] {
-        guard fileManager.fileExists(atPath: metadataURL.path) else { return latestItemsFromDisk() }
+        guard fileManager.fileExists(atPath: metadataURL.path) else { return try latestItemsFromDisk() }
         return try Self.loadItems(metadataURL: metadataURL, fileManager: fileManager, decoder: decoder)
     }
 
@@ -505,6 +527,7 @@ final class CaptureHistoryStore: ObservableObject {
         }
         items = committedItems
         retention = (document.retention ?? .default).validated
+        recoveryProtectedIDs = document.recoveryProtectedIDs ?? []
         Self.removeUnreferencedResources(
             // Keep every raw metadata reference during error recovery, even
             // when loadItems filtered a missing file, duplicate, or overflow.
@@ -516,7 +539,7 @@ final class CaptureHistoryStore: ObservableObject {
         )
     }
 
-    private func latestItemsFromDisk() -> [CaptureHistoryItem] {
+    private func latestItemsFromDisk() throws -> [CaptureHistoryItem] {
         if fileManager.fileExists(atPath: metadataURL.path),
            let persisted = try? Self.loadItems(
                metadataURL: metadataURL,
@@ -525,10 +548,7 @@ final class CaptureHistoryStore: ObservableObject {
            ) {
             return persisted
         }
-        return Self.recoverItemsFromDirectory(
-            historyDirectory: historyDirectory,
-            fileManager: fileManager
-        )
+        return try recoverAndPersistItems()
     }
 
     private func withExclusiveHistoryLock<T>(
@@ -656,7 +676,8 @@ final class CaptureHistoryStore: ObservableObject {
                         pixelWidth: max(0, width),
                         pixelHeight: max(0, height),
                         projectFileName: Self.isRegularFile(url.deletingPathExtension().appendingPathExtension("capturelab"))
-                            ? url.deletingPathExtension().lastPathComponent + ".capturelab" : nil
+                            ? url.deletingPathExtension().lastPathComponent + ".capturelab" : nil,
+                        modifiedAt: values?.contentModificationDate ?? createdAt
                     ),
                     modifiedAt: values?.contentModificationDate ?? createdAt
                 )
@@ -672,8 +693,6 @@ final class CaptureHistoryStore: ObservableObject {
             .filter { recoveredIDs.insert($0.item.id).inserted }
             .map(\.item)
             .sorted { $0.createdAt > $1.createdAt }
-            .prefix(Self.maxItemCount)
-            .map { $0 }
     }
 
     private static func removeUnreferencedResources(

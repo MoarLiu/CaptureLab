@@ -700,7 +700,7 @@ final class CaptureHistoryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphanURL.path))
     }
 
-    func testMissingMetadataRecoveryRemovesPNGsBeyondRetentionLimit() throws {
+    func testMissingMetadataRecoveryProtectsPNGsBeyondDefaultRetentionLimit() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
         let totalCount = CaptureHistoryStore.maxItemCount + 3
@@ -719,8 +719,9 @@ final class CaptureHistoryStoreTests: XCTestCase {
         let reloaded = CaptureHistoryStore(environment: fixture.environment)
 
         XCTAssertNil(reloaded.loadError)
-        XCTAssertEqual(reloaded.items.count, CaptureHistoryStore.maxItemCount)
-        XCTAssertEqual(try pngURLs(in: reloaded.historyDirectory).count, CaptureHistoryStore.maxItemCount)
+        XCTAssertEqual(reloaded.items.count, totalCount)
+        XCTAssertEqual(try pngURLs(in: reloaded.historyDirectory).count, totalCount)
+        XCTAssertEqual(reloaded.recoveryProtectedIDs, Set(reloaded.items.map(\.id)))
         XCTAssertTrue(reloaded.items.allSatisfy {
             FileManager.default.fileExists(atPath: reloaded.url(for: $0).path)
         })

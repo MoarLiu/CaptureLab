@@ -94,6 +94,8 @@ Annotations retain their own drawing order. The background surrounds the finishe
 crop and does not change object coordinates. Copy, pin, drag-out, history, and R2
 use the same composition; R2 continues to upload PNG.
 
+The [0.11.1 release validation record](docs/0.11.1-release-validation.md) covers
+history recovery, project resource limits, and counter overflow fixes.
 The [0.11.0 plan and validation record](docs/0.11.0-validation.md) covers daily
 capture/editing and isolated update validation. Scrolling capture was removed
 in 0.11.0; existing saved images and projects remain available for editing.
@@ -107,6 +109,11 @@ a new confirmation if concurrent captures would expand that deletion set. Time
 limits are enforced on startup, capture, and history refresh; edited entries use
 their last edit time. Preview and project resources are cleaned up together. Existing exported
 files are independent of history cleanup.
+When a missing or damaged index is rebuilt, recovered captures are protected from
+automatic cleanup across restarts. Apply Retention in Screenshot Settings to
+review their deletion, or delete individual entries normally. Image imports,
+layer duplication, and custom backgrounds are checked against the complete
+encoded project limit before changing the document.
 
 Build and run:
 

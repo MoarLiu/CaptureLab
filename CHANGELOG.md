@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.11.1 - 2026-10-11
+
+- Preserve every recovered capture and editable project when the history index
+  is missing or damaged. Recovery protection survives restarts, age limits, and
+  writes from another current-version instance. Apply Retention in Screenshot
+  Settings to review cleanup, or delete individual entries normally.
+- Check the complete encoded project size before importing images, duplicating
+  image layers, or applying a custom background. Reject oversized compositions
+  while preserving the document, selection, and undo history.
+- Prevent integer overflow when adding a counter to an imported project with
+  an exceptionally large existing label; choose an unused positive label.
+
+Existing editable projects remain compatible. Older app versions do not
+recognize recovery protection; avoid opening recovered history with an older
+version before reviewing its retention settings.
+
+Validation: 380 tests pass with no failures or skips under strict concurrency and
+warnings as errors. ARM64 and x86_64 Release builds target macOS 13.
+Release validation and artifacts are recorded in the
+[0.11.1 validation record](docs/0.11.1-release-validation.md).
+
+Verified release artifacts; publication approved:
+
+- `CaptureLab-0.11.1-macos-arm64.dmg` — SHA-256:
+  `4144831d59e761e8b56b81d34b99bd0d134c80f7636ee4f83b924fc8ca35f7d6`
+- `CaptureLab-0.11.1-macos-x86_64.dmg` — SHA-256:
+  `dede3e57067caf3910f563898570a064a000a99549f319be03902f80e2f8247a`
+
+Each package includes matching `.dmg.sha256` and `.dmg.sig` files.
+Uses the existing self-signed identity without notarization or hardened runtime;
+Gatekeeper may require manual approval.
+
 ## 0.11.0 - 2026-10-04
 
 - Removed vertical and horizontal scrolling capture from the Capture menu,

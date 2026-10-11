@@ -8,7 +8,7 @@ struct CaptureLayersView: View {
     let annotations: [CaptureAnnotation]
     let selectedObjects: Set<CaptureObjectID>
     let onSelectionChanged: (Set<CaptureObjectID>) -> Void
-    let onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Void
+    let onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Bool
     let addImages: () -> Void
     @State private var rotation = "0"
     @State private var width = "0"
@@ -80,7 +80,7 @@ struct CaptureLayersView: View {
                     Button(arrangement.title) {
                         let result = CaptureObjectOperations.arranged(arrangement, layers: document.imageLayers,
                                                                      annotations: annotations, selection: selectedObjects)
-                        onCommit(result.layers, result.annotations)
+                        _ = onCommit(result.layers, result.annotations)
                     }
                 }
             }.disabled(selectedObjects.count < 2)
@@ -131,24 +131,25 @@ struct CaptureLayersView: View {
         layer.rotationDegrees = degrees.truncatingRemainder(dividingBy: 360)
         layer.normalizedRect = CGRect(x: min(max(0, center.x - w / 200), 1 - w / 100),
                                       y: min(max(0, center.y - h / 200), 1 - h / 100), width: w / 100, height: h / 100)
-        onCommit(document.imageLayers.map { $0.id == layer.id ? layer : $0 }, annotations)
+        guard onCommit(document.imageLayers.map { $0.id == layer.id ? layer : $0 }, annotations) else { return }
         error = nil
     }
 
     private func duplicate() {
         do {
             let result = try CaptureObjectOperations.duplicated(layers: document.imageLayers, annotations: annotations, selection: selectedObjects)
-            onCommit(result.layers, result.annotations); onSelectionChanged(result.selection); error = nil
+            guard onCommit(result.layers, result.annotations) else { return }
+            onSelectionChanged(result.selection); error = nil
         } catch { self.error = error.localizedDescription }
     }
 
     private func deleteSelection() {
         let result = CaptureObjectOperations.deleted(layers: document.imageLayers, annotations: annotations, selection: selectedObjects)
-        onCommit(result.layers, result.annotations); onSelectionChanged([])
+        if onCommit(result.layers, result.annotations) { onSelectionChanged([]) }
     }
 
     private func reorder(forward: Bool) {
-        onCommit(CaptureObjectOperations.reorder(document.imageLayers, selection: selectedObjects, bringForward: forward), annotations)
+        _ = onCommit(CaptureObjectOperations.reorder(document.imageLayers, selection: selectedObjects, bringForward: forward), annotations)
     }
 }
 
@@ -157,7 +158,7 @@ struct CaptureLayersCanvasView: NSViewRepresentable {
     let annotations: [CaptureAnnotation]
     let selection: Set<CaptureObjectID>
     let onSelectionChanged: (Set<CaptureObjectID>) -> Void
-    let onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Void
+    let onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Bool
     var zoomLevel: CaptureZoomLevel = .fit
     var onError: (String) -> Void = { _ in }
 
@@ -181,7 +182,7 @@ final class CaptureLayersNSCanvasView: NSView {
     private(set) var selection: Set<CaptureObjectID> = []
     private var zoom: CaptureZoomLevel = .fit
     var onSelectionChanged: (Set<CaptureObjectID>) -> Void = { _ in }
-    var onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Void = { _, _ in }
+    var onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Bool = { _, _ in true }
     var onError: (String) -> Void = { _ in }
     private var preview: NSImage?
     private var previewIsValid = false
@@ -435,7 +436,9 @@ final class CaptureLayersNSCanvasView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let g = gesture else { return }
         gesture = nil; marquee = nil; guides = []
-        if layers != g.layers || annotations != g.annotations { onCommit(layers, annotations) }
+        if layers != g.layers || annotations != g.annotations, !onCommit(layers, annotations) {
+            layers = g.layers; annotations = g.annotations; previewIsValid = false
+        }
         needsDisplay = true
     }
 
@@ -457,12 +460,12 @@ final class CaptureLayersNSCanvasView: NSView {
         guard !selection.isEmpty else { super.keyDown(with: event); return }
         if event.keyCode == 51 || event.keyCode == 117 {
             let result = CaptureObjectOperations.deleted(layers: layers, annotations: annotations, selection: selection)
-            commit(result); select([]); return
+            if commit(result) { select([]) }; return
         }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "d" {
             do {
                 let result = try CaptureObjectOperations.duplicated(layers: layers, annotations: annotations, selection: selection)
-                commit((result.layers, result.annotations)); select(result.selection)
+                if commit((result.layers, result.annotations)) { select(result.selection) }
             } catch { onError(error.localizedDescription) }
             return
         }
@@ -477,8 +480,11 @@ final class CaptureLayersNSCanvasView: NSView {
                                                   dx: delta.x - origin.x, dy: delta.y - origin.y))
     }
 
-    private func commit(_ result: (layers: [CaptureImageLayer], annotations: [CaptureAnnotation])) {
+    @discardableResult
+    private func commit(_ result: (layers: [CaptureImageLayer], annotations: [CaptureAnnotation])) -> Bool {
+        guard onCommit(result.layers, result.annotations) else { needsDisplay = true; return false }
         layers = result.layers; annotations = result.annotations; previewIsValid = false
-        onCommit(layers, annotations); needsDisplay = true
+        needsDisplay = true
+        return true
     }
 }

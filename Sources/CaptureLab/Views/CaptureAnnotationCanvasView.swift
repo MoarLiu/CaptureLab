@@ -1351,11 +1351,17 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
     }
 
     private func nextCounterText() -> String {
-        let highestCounter = annotations
+        let used = Set(annotations
             .filter { $0.kind == .counter }
             .compactMap { Int($0.text) }
-            .max() ?? 0
-        return "\(highestCounter + 1)"
+            .filter { $0 > 0 })
+        let next = (used.max() ?? 0).addingReportingOverflow(1)
+        if !next.overflow { return String(next.partialValue) }
+        // Imported projects can contain Int.max. Keep their labels and choose
+        // an unused positive number instead of trapping or wrapping negative.
+        var available = 1
+        while used.contains(available) { available += 1 }
+        return String(available)
     }
 
     private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {

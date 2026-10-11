@@ -4,6 +4,106 @@ import XCTest
 
 @MainActor
 final class CaptureHistoryRetentionTests: XCTestCase {
+    func testCorruptItemRecoveryPreservesEveryPairAcrossExpiryRestartAndStaleWriter() throws {
+        let fixture = try RetentionFixture()
+        defer { fixture.remove() }
+        var now = Date()
+        let original = CaptureHistoryStore(environment: fixture.environment, now: { now })
+        let policy = CaptureHistoryRetention(maximumCount: 100, maximumAgeDays: 1)
+        XCTAssertNil(try original.applyRetention(original.previewRetention(policy)))
+        let image = try recoveryImage()
+        let png = try XCTUnwrap(image.captureLabPNGData())
+        let project = try CaptureProjectStore.encode(document: CaptureDocument(image: image, sourceURL: nil, createdAt: now), annotations: [])
+        for _ in 0..<40 {
+            _ = try original.saveEditable(preview: png, project: project, for: nil, pixelSize: image.captureLabPixelSize, createdAt: now)
+        }
+        let recoveredIDs = Set(original.items.map(\.id))
+        let resources = original.items.flatMap { [$0.fileName, $0.projectFileName!] }
+        var metadata = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: original.metadataURL)) as? [String: Any])
+        var entries = try XCTUnwrap(metadata["items"] as? [[String: Any]])
+        entries[0]["pixelWidth"] = "damaged field"
+        metadata["items"] = entries
+        try JSONSerialization.data(withJSONObject: metadata).write(to: original.metadataURL)
+
+        let recovered = CaptureHistoryStore(environment: fixture.environment, now: { now })
+        XCTAssertNotNil(recovered.loadError)
+        XCTAssertEqual(recovered.retention, policy)
+        XCTAssertEqual(Set(recovered.items.map(\.id)), recoveredIDs)
+        XCTAssertEqual(recovered.recoveryProtectedIDs, recoveredIDs)
+        now = now.addingTimeInterval(2 * 86_400)
+        try recovered.refresh()
+        let restarted = CaptureHistoryStore(environment: fixture.environment, now: { now })
+        XCTAssertEqual(Set(restarted.items.map(\.id)), recoveredIDs)
+
+        _ = try original.record(data: png, pixelSize: image.captureLabPixelSize, createdAt: now)
+        try restarted.refresh()
+        XCTAssertEqual(restarted.items.count, 41)
+        for name in resources {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: restarted.historyDirectory.appendingPathComponent(name).path))
+        }
+        // The existing explicit preview/confirmation is what removes protection.
+        let preview = try restarted.previewRetention(.default)
+        XCTAssertEqual(preview.removingIDs.count, 11)
+        XCTAssertNil(try restarted.applyRetention(preview))
+        XCTAssertEqual(restarted.items.count, 30)
+        XCTAssertTrue(restarted.recoveryProtectedIDs.isEmpty)
+        XCTAssertTrue(CaptureHistoryStore(environment: fixture.environment).recoveryProtectedIDs.isEmpty)
+    }
+
+    func testMissingOrUnreadablePolicyCannotDeleteRecoveredCapturesOnNextStartup() throws {
+        for missing in [false, true] {
+            let fixture = try RetentionFixture()
+            defer { fixture.remove() }
+            let store = CaptureHistoryStore(environment: fixture.environment)
+            XCTAssertNil(try store.applyRetention(store.previewRetention(.init(maximumCount: 300))))
+            let image = try recoveryImage()
+            let png = try XCTUnwrap(image.captureLabPNGData())
+            for _ in 0..<105 { _ = try store.record(data: png, pixelSize: image.captureLabPixelSize) }
+            let ids = Set(store.items.map(\.id))
+            if missing { try FileManager.default.removeItem(at: store.metadataURL) }
+            else { try Data("truncated index".utf8).write(to: store.metadataURL) }
+            let recovered = CaptureHistoryStore(environment: fixture.environment)
+            XCTAssertEqual(Set(recovered.items.map(\.id)), ids)
+            try recovered.refresh()
+            let restarted = CaptureHistoryStore(environment: fixture.environment)
+            XCTAssertEqual(Set(restarted.items.map(\.id)), ids)
+            XCTAssertEqual(restarted.recoveryProtectedIDs, ids)
+            for item in restarted.items { XCTAssertEqual(try restarted.data(for: item), png) }
+        }
+    }
+
+    private func recoveryImage() throws -> NSImage {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(NSColor.red.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        return NSImage(cgImage: try XCTUnwrap(context.makeImage()), size: CGSize(width: 4, height: 4))
+    }
+
+    func testRecoveryWriteFailuresKeepAllResourcesBeforeAndAfterMetadataCommit() throws {
+        for commitsBeforeFailure in [false, true] {
+            let fixture = try RetentionFixture()
+            defer { fixture.remove() }
+            let store = CaptureHistoryStore(environment: fixture.environment)
+            XCTAssertNil(try store.applyRetention(store.previewRetention(.init(maximumCount: 100))))
+            let image = try recoveryImage()
+            let png = try XCTUnwrap(image.captureLabPNGData())
+            for _ in 0..<40 { _ = try store.record(data: png, pixelSize: image.captureLabPixelSize) }
+            let urls = store.items.map { store.url(for: $0) }
+            try FileManager.default.removeItem(at: store.metadataURL)
+            let failing = CaptureHistoryStore(environment: fixture.environment, metadataWriter: { data, url in
+                if commitsBeforeFailure { try data.write(to: url, options: .atomic) }
+                throw CocoaError(.fileWriteUnknown)
+            })
+            XCTAssertNotNil(failing.loadError)
+            XCTAssertEqual(failing.items.count, 40)
+            XCTAssertTrue(urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+            let restarted = CaptureHistoryStore(environment: fixture.environment)
+            XCTAssertEqual(restarted.items.count, 40)
+            XCTAssertEqual(restarted.recoveryProtectedIDs.count, 40)
+        }
+    }
+
     func testRaisedLimitSurvivesRestartAndStaleWriter() throws {
         let fixture = try RetentionFixture()
         defer { fixture.remove() }
