@@ -287,15 +287,21 @@ final class CaptureWorkflowTests: XCTestCase {
         _ = NSApplication.shared
         let fixture = try WorkflowFixture()
         defer { fixture.cleanUp() }
-        let settingsView = NSHostingView(rootView: CaptureWorkflowSettingsView(model: fixture.model))
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 500, height: 620),
+        let suite = "CaptureWorkflowSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let session = CaptureSettingsSession(store: fixture.settingsStore, retention: fixture.model.historyStore.retention)
+        let settingsView = NSHostingView(rootView: CaptureSettingsView(session: session, model: fixture.model,
+            shortcuts: CaptureShortcutStore(defaults: defaults), hotKeys: GlobalHotKeyController(),
+            recognition: RecognitionSettings(defaults: nil), registerShortcut: { _, _ in nil }))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 900, height: 640),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = settingsView
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         drainUI()
-        XCTAssertLessThanOrEqual(settingsView.fittingSize.width, 500)
+        XCTAssertLessThanOrEqual(settingsView.fittingSize.width, 900)
         try saveFixture(settingsView, name: "settings")
         let controller = fixture.model.overlayController
         var options = CaptureWorkflowOptions()
@@ -356,6 +362,7 @@ private final class WorkflowFixture {
     let pasteboard = NSPasteboard(name: .init("CaptureWorkflowTests.\(UUID().uuidString)"))
     let exportURL: URL
     var model: CaptureLabViewModel!
+    var settingsStore: CloudflareR2SettingsStore!
     var uploads: [CloudflareR2UploadRequest] = []
     init(failHistory: Bool = false) throws {
         home = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureWorkflowTests-\(UUID().uuidString)")
@@ -365,6 +372,7 @@ private final class WorkflowFixture {
         blue = try Self.image(.systemBlue, width: 96, height: 64)
         let environment = ["HOME": home.path]
         let settings = CloudflareR2SettingsStore(environment: environment, secretStore: WorkflowSecretStore())
+        settingsStore = settings
         try settings.save(CloudflareR2SettingsInput(endpoint: "https://example.test", bucket: "test", pathPrefix: "captures",
             publicBaseURL: "https://example.test", accessKeyID: "fixture", secretAccessKey: "fixture-secret"))
         let captureURL = home.appendingPathComponent("capture.png")

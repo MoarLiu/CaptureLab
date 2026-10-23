@@ -27,7 +27,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         window.styleMask.insert(.fullSizeContentView)
         window.isMovableByWindowBackground = false
         window.backgroundColor = .windowBackgroundColor
-        window.minSize = NSSize(width: 1_080, height: 620)
+        window.minSize = NSSize(width: 900, height: 600)
         alignTrafficLights(in: window)
         CaptureLabAppDelegate.configureMainWindow(window)
     }

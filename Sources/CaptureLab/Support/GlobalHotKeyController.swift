@@ -13,6 +13,7 @@ final class GlobalHotKeyController: ObservableObject {
 
     @Published private(set) var registrationError: String?
     @Published private(set) var actionErrors: [CaptureAction: String] = [:]
+    var recordShortcut: ((CaptureKeyboardShortcut) -> Void)?
     var registeredShortcut: CaptureKeyboardShortcut? { registrations[.region]?.shortcut }
     func registeredShortcut(for action: CaptureAction) -> CaptureKeyboardShortcut? { registrations[action]?.shortcut }
     private struct Registration {
@@ -138,7 +139,9 @@ final class GlobalHotKeyController: ObservableObject {
     }
 
     func handleHotKey(id: UInt32) {
-        registrations.values.first { $0.id == id }?.perform()
+        guard let registration = registrations.values.first(where: { $0.id == id }) else { return }
+        if let recordShortcut { recordShortcut(registration.shortcut) }
+        else { registration.perform() }
     }
 
     private func installEventHandlerIfNeeded() -> OSStatus {

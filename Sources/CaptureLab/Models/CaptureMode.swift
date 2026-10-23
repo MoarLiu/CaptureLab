@@ -2,6 +2,7 @@ import Foundation
 
 enum CaptureMode: Hashable, Identifiable {
     case region
+    case preciseRegion
     case lastRegion
     case frozenRegion
     case fullScreen
@@ -10,6 +11,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var id: String {
         switch self {
+        case .preciseRegion: return "preciseRegion"
         case .lastRegion: return "lastRegion"
         case .frozenRegion: return "frozenRegion"
         case .region:
@@ -25,6 +27,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .preciseRegion: return L10n.preciseRegion
         case .lastRegion: return L10n.lastRegion
         case .frozenRegion: return L10n.frozenRegion
         case .region:
@@ -40,6 +43,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var promptTitle: String {
         switch self {
+        case .preciseRegion: return L10n.preciseRegion
         case .lastRegion: return L10n.lastRegion
         case .frozenRegion: return L10n.frozenRegion
         case .region:
@@ -55,7 +59,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var completedTitle: String {
         switch self {
-        case .lastRegion, .frozenRegion: return L10n.capturedRegion
+        case .lastRegion, .frozenRegion, .preciseRegion: return L10n.capturedRegion
         case .region:
             return L10n.capturedRegion
         case .fullScreen:
@@ -69,7 +73,7 @@ enum CaptureMode: Hashable, Identifiable {
 
     var completedAndCopiedTitle: String {
         switch self {
-        case .lastRegion, .frozenRegion: return L10n.capturedRegionAndCopied
+        case .lastRegion, .frozenRegion, .preciseRegion: return L10n.capturedRegionAndCopied
         case .region:
             return L10n.capturedRegionAndCopied
         case .fullScreen:

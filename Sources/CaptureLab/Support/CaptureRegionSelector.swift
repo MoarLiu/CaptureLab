@@ -3,6 +3,7 @@ import SwiftUI
 
 @MainActor
 final class CaptureRegionSelection: ObservableObject {
+    var requiresConfirmation = false
     @Published var rect = CGRect.zero
     @Published var ratio = "Free"
     @Published var width = "640" {
@@ -107,19 +108,21 @@ final class CaptureRegionSelector {
     private var observer: NSObjectProtocol?
     private var selection: CaptureRegionSelection?
 
-    func select(displays: [CaptureDisplay], frames: [String: CGImage], frozen: Bool) async throws -> CGRect {
+    func select(displays: [CaptureDisplay], frames: [String: CGImage], frozen: Bool, precise: Bool = false) async throws -> CGRect {
         guard continuation == nil else { throw CaptureLabError.captureCancelled }
         try Task.checkCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
                 let state = CaptureRegionSelection()
+                state.requiresConfirmation = precise
                 state.displays = displays
                 state.pointer = NSEvent.mouseLocation
                 state.finish = { [weak self, weak state] in
                     guard let self, let state else { return }
                     guard PreciseCaptureGeometry.outputSize(state.rect, displays: displays) != nil else {
                         state.error = L10n.text(en: "Select a valid region (80 MP maximum).", zh: "请选择有效区域（最多 8000 万像素）。")
+                        state.didChange?()
                         return
                     }
                     self.complete(.success(state.rect))
@@ -141,6 +144,7 @@ final class CaptureRegionSelector {
                     panel.orderFrontRegardless()
                     if display.frame.contains(state.pointer) { panel.makeKey(); panel.makeFirstResponder(view) }
                 }
+                if precise {
                 let screen = NSScreen.screens.first { $0.frame.contains(state.pointer) } ?? NSScreen.screens.first
                 let frame = screen?.visibleFrame ?? state.bounds
                 let width = min(760.0, frame.width - 24)
@@ -152,6 +156,7 @@ final class CaptureRegionSelector {
                 options.contentView = NSHostingView(rootView: RegionOptionsView(state: state, frozen: frozen))
                 panels.append(options)
                 options.orderFrontRegardless()
+                }
                 state.didChange = { [weak self] in self?.panels.forEach { $0.contentView?.needsDisplay = true } }
                 observer = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor in self?.complete(.failure(CaptureLabError.captureFailed(L10n.invalidLastRegion))) }
@@ -196,7 +201,9 @@ final class RegionSelectionView: NSView {
     init(state: CaptureRegionSelection, display: CaptureDisplay, snapshot: CGImage?, frozen: Bool) {
         self.state = state; self.display = display; self.snapshot = snapshot; self.frozen = frozen
         super.init(frame: CGRect(origin: .zero, size: display.frame.size))
-        setAccessibilityLabel(L10n.text(en: "Capture region. Drag and release to capture, Escape to cancel.", zh: "截图区域。拖动框选，松开鼠标截图，Esc 取消。"))
+        setAccessibilityLabel(state.requiresConfirmation
+            ? L10n.text(en: "Precise capture. Adjust the selection, Return to capture, Escape to cancel.", zh: "精确框选。调整选区后按回车截图，Esc 取消。")
+            : L10n.text(en: "Capture region. Drag and release to capture, Escape to cancel.", zh: "截图区域。拖动框选，松开鼠标截图，Esc 取消。"))
     }
     required init?(coder: NSCoder) { nil }
     override var acceptsFirstResponder: Bool { true }
@@ -225,7 +232,7 @@ final class RegionSelectionView: NSView {
         isSelecting = false
         updateSelection(to: screenPoint(for: event))
         state.setRect(state.rect)
-        if state.rect.hasPositiveArea { state.finish?() }
+        if state.rect.hasPositiveArea && !state.requiresConfirmation { state.finish?() }
     }
     private func screenPoint(for event: NSEvent) -> CGPoint {
         window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
@@ -286,6 +293,16 @@ final class RegionSelectionView: NSView {
             let cross = NSBezierPath(); cross.move(to: CGPoint(x: target.midX - 8, y: target.midY)); cross.line(to: CGPoint(x: target.midX + 8, y: target.midY))
             cross.move(to: CGPoint(x: target.midX, y: target.midY - 8)); cross.line(to: CGPoint(x: target.midX, y: target.midY + 8)); cross.stroke()
         }
+        if !state.requiresConfirmation, display.frame.contains(state.pointer) {
+            let text = state.error ?? L10n.text(en: "Drag and release to capture · Esc to cancel", zh: "拖动框选，松开鼠标截图 · Esc 取消")
+            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.white]
+            let size = (text as NSString).size(withAttributes: attributes)
+            let box = CGRect(x: (bounds.width - min(size.width + 28, bounds.width - 32)) / 2, y: 24,
+                             width: min(size.width + 28, bounds.width - 32), height: 34)
+            NSColor.black.withAlphaComponent(0.7).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()
+            (text as NSString).draw(in: box.insetBy(dx: 14, dy: 8), withAttributes: attributes)
+        }
     }
 }
 
@@ -295,7 +312,7 @@ private struct RegionOptionsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(frozen ? L10n.frozenRegion : L10n.captureRegion).font(.headline)
+                Text(L10n.text(en: "Precise Area", zh: "精确框选")).font(.headline)
                 Spacer()
                 Text(state.dimensions).monospacedDigit()
             }
@@ -317,7 +334,7 @@ private struct RegionOptionsView: View {
                 Button(L10n.cancel) { state.cancel?() }.keyboardShortcut(.cancelAction)
                 Button(L10n.captureMenu) { state.finish?() }.keyboardShortcut(.defaultAction).disabled(!state.rect.hasPositiveArea)
             }
-            Text(state.error ?? L10n.text(en: "Release to capture · Arrows: 1 pt · Shift: 10 pt · Option: resize · Return: capture", zh: "松开鼠标截图 · 方向键：1 点 · Shift：10 点 · Option：调整尺寸 · 回车：截图"))
+            Text(state.error ?? L10n.text(en: "Adjust your selection, then press Return to capture. Escape cancels.", zh: "调整选区后按回车截图，Esc 取消。"))
                 .font(.caption).foregroundColor(state.error == nil ? .secondary : .red)
         }
         .padding(14)

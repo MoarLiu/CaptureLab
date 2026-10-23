@@ -3,73 +3,136 @@ import SwiftUI
 
 struct CaptureLauncherView: View {
     @ObservedObject var model: CaptureLabViewModel
+    @ObservedObject var shortcuts: CaptureShortcutStore
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(L10n.captureLauncher).font(.title2)
-            ForEach(CaptureAction.allCases.filter { $0 != .launcher }) { action in
-                Button(action.title) { model.performCaptureAction(action) }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(model.isCapturing)
+        VStack(alignment: .leading, spacing: 20) {
+            Text(L10n.captureLauncher).font(.system(size: 20, weight: .semibold))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                choice(.region, symbol: "viewfinder")
+                choice(.window, symbol: "macwindow")
+                choice(.fullScreen, symbol: "display")
+                choice(.lastRegion, symbol: "arrow.counterclockwise")
+                choice(.delayedRegion, symbol: "timer")
+                modeChoice(.frozenRegion, symbol: "snowflake")
+                choice(.text, symbol: "text.viewfinder")
+                choice(.qrCode, symbol: "qrcode")
+                modeChoice(.preciseRegion, symbol: "ruler")
             }
-            Button(L10n.captureDelayedRegion(5)) { model.capture(.delayedRegion(seconds: 5)) }.disabled(model.isCapturing)
-            Button(L10n.frozenRegion) { model.capture(.frozenRegion) }.disabled(model.isCapturing)
-            Text(L10n.text(en: "Region selection: drag, enter a size or ratio, then press Return. Escape cancels.",
-                zh: "区域选择：拖动框选或输入尺寸、比例，回车确认，Esc 取消。"))
-                .font(.caption).foregroundStyle(.secondary)
-        }.padding(24).frame(width: 360).captureLabWindowCloseShortcuts()
+            Text(L10n.text(en: "Choose a capture mode.", zh: "选择一种截图方式。"))
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }.padding(24).frame(width: 440).captureLabWindowCloseShortcuts()
+    }
+    private func choice(_ action: CaptureAction, symbol: String) -> some View {
+        tile(action.title, symbol: symbol, shortcut: shortcuts.shortcut(for: action)?.displayTitle) {
+            model.performCaptureAction(action)
+        }
+    }
+    private func modeChoice(_ mode: CaptureMode, symbol: String) -> some View {
+        tile(mode.title, symbol: symbol, shortcut: nil) { model.capture(mode) }
+    }
+    private func tile(_ title: String, symbol: String, shortcut: String?, action: @escaping () -> Void) -> some View {
+        Button {
+            dismiss()
+            Task { @MainActor in await Task.yield(); action() }
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: symbol).font(.system(size: 19)).foregroundStyle(Color.accentColor)
+                    Spacer()
+                    if let shortcut { Text(shortcut).font(.system(size: 11)).foregroundStyle(.secondary) }
+                }
+                Text(title).font(.system(size: 13, weight: .medium))
+            }
+            .padding(14).frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).disabled(!model.canStartCapture)
     }
 }
 
 struct DirectRecognitionView: View {
     @ObservedObject var controller: DirectRecognitionController
+    let startSelection: (DirectRecognitionController.Kind) -> Void
+    @Environment(\.dismiss) private var dismiss
     @State private var selected: String?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(L10n.text(en: "Recognition Results", zh: "识别结果")).font(.title2)
-                Spacer()
-                if controller.isRunning { ProgressView().controlSize(.small) }
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10n.text(en: "Recognition Results", zh: "识别结果")).font(.title2.weight(.semibold))
+            if controller.isRunning {
+                stateContent {
+                    ProgressView().controlSize(.large)
+                    Text(L10n.recognizingText).font(.headline)
+                    Text(copyAvailability).foregroundStyle(.secondary)
+                }
+            } else if let failure = controller.failure {
+                stateContent {
+                    Image(systemName: "exclamationmark.triangle").font(.system(size: 30)).foregroundStyle(Color.red)
+                    Text(L10n.text(en: "Recognition failed", zh: "识别失败")).font(.headline)
+                    Text(failure).foregroundStyle(.secondary).textSelection(.enabled)
+                    selectionButton
+                }
+            } else if controller.results.isEmpty {
+                stateContent {
+                    Image(systemName: "text.viewfinder").font(.system(size: 34)).foregroundStyle(.secondary)
+                    Text(controller.lastKind == nil
+                         ? L10n.text(en: "Select an area to recognize text or QR codes", zh: "框选区域以识别文字或二维码")
+                         : controller.message).font(.headline)
+                    selectionButton
+                }
+            } else {
+                Text(controller.message).foregroundStyle(.secondary)
+                List(controller.results, id: \.self, selection: $selected) { value in
+                    Text(value).lineLimit(8).textSelection(.enabled).tag(value)
+                }.frame(minHeight: 180)
             }
-            Text(controller.failure ?? controller.message)
-                .foregroundColor(controller.failure == nil ? .secondary : .red)
-            List(controller.results, id: \.self, selection: $selected) { value in
-                Text(value).lineLimit(8).textSelection(.enabled).tag(value)
-            }.frame(minHeight: 180)
             HStack {
-                Button(L10n.cancel) { controller.cancel() }.disabled(!controller.isRunning)
+                if controller.isRunning {
+                    Button(L10n.cancel) { controller.cancel() }
+                } else if !controller.results.isEmpty {
+                    selectionButton
+                }
                 Spacer()
                 Button(L10n.copyOCRText) { if let selected { controller.copy(selected) } }
-                    .disabled(selected == nil || controller.isRunning)
+                    .disabled(!canCopy).help(copyAvailability).accessibilityHint(copyAvailability)
             }
-        }.padding(20).frame(minWidth: 500, minHeight: 300)
+        }.padding(24).frame(minWidth: 500, minHeight: 340)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: controller.results) { selected = $0.first }
         .onAppear { selected = controller.results.first }
         .onDisappear { controller.cancel() }
         .captureLabWindowCloseShortcuts()
     }
-}
 
-struct RecognitionSettingsView: View {
-    @StateObject private var settings = RecognitionSettings()
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.recognitionLanguages).font(.title2)
-            Text(L10n.text(en: "Languages available in Vision on this Mac. Empty selection uses available Chinese and English languages with automatic detection.",
-                zh: "以下为本机 Vision 支持的语言。未选择时使用系统支持的中英文并自动检测。"))
-                .font(.caption).foregroundStyle(.secondary)
-            if let error = settings.error { Text(error).foregroundStyle(.red) }
-            HStack {
-                Button(L10n.text(en: "Automatic", zh: "自动")) { settings.select([]) }
-                Button(L10n.text(en: "Chinese + English", zh: "中英文")) { settings.select(["zh-Hans", "zh-Hant", "en-US"]) }
-                Button(L10n.text(en: "Japanese + English", zh: "日英文")) { settings.select(["ja-JP", "en-US"]) }
-            }
-            List(settings.supported, id: \.self) { language in
-                Toggle((Locale.current.localizedString(forIdentifier: language) ?? language) + " (\(language))", isOn: Binding(
-                    get: { settings.languages.contains(language) },
-                    set: { selected in
-                        settings.select(selected ? settings.languages + [language] : settings.languages.filter { $0 != language })
-                    }))
-            }
-        }.padding(20).frame(width: 460, height: 440).captureLabWindowCloseShortcuts()
+    private var canCopy: Bool { !controller.isRunning && selected.map(controller.results.contains) == true }
+    private var copyAvailability: String {
+        controller.isRunning
+            ? L10n.text(en: "Copy will be available when recognition finishes.", zh: "识别完成后即可复制结果。")
+            : canCopy ? L10n.copyOCRText : L10n.text(en: "Select a recognized result to copy.", zh: "有识别结果并选中后即可复制。")
+    }
+    private func stateContent<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 14, content: content).multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity).padding(.vertical, 20)
+    }
+    private var selectionButton: some View {
+        HStack(spacing: 12) {
+            Button(controller.lastKind == nil ? L10n.text(en: "Select Text Area", zh: "开始框选识字")
+                   : L10n.text(en: "Select Area Again", zh: "重新框选")) {
+                select(controller.lastKind ?? .text)
+            }.buttonStyle(.borderedProminent)
+            Menu(L10n.text(en: "Recognition Mode", zh: "识别方式")) {
+                Button(L10n.text(en: "Recognize Text", zh: "框选识字")) { select(.text) }
+                Button(L10n.text(en: "Recognize QR Code", zh: "识别二维码")) { select(.qrCode) }
+            }.fixedSize()
+        }
+    }
+    private func select(_ kind: DirectRecognitionController.Kind) {
+        controller.cancel()
+        dismiss()
+        Task { @MainActor in
+            await Task.yield()
+            startSelection(kind)
+        }
     }
 }

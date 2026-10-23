@@ -10,11 +10,20 @@ struct CapturePresentationView: View {
     var onApply: (CapturePresentation) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var draft = CapturePresentation()
-    @StateObject private var presets = CapturePresentationStore()
+    @StateObject private var presets: CapturePresentationStore
     @State private var presetID: UUID?
     @State private var presetName = ""
     @State private var errorMessage: String?
     @State private var previewImage: NSImage?
+    @State private var showsCustom = false
+    @State private var showsPresetManagement = false
+
+    init(presentation: Binding<CapturePresentation>, sourceSize: CGSize, sourceImage: NSImage? = nil,
+         onApply: @escaping (CapturePresentation) -> Void, presetStore: CapturePresentationStore? = nil) {
+        _presentation = presentation
+        self.sourceSize = sourceSize; self.sourceImage = sourceImage; self.onApply = onApply
+        _presets = StateObject(wrappedValue: presetStore ?? CapturePresentationStore())
+    }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -26,11 +35,17 @@ struct CapturePresentationView: View {
             HStack(alignment: .top, spacing: 20) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        backgroundControls
-                        Divider()
-                        layoutControls
-                        Divider()
-                        presetControls
+                        presetGallery
+                        DisclosureGroup(L10n.text(en: "Customize", zh: "自定义"), isExpanded: $showsCustom) {
+                            VStack(alignment: .leading, spacing: 18) {
+                                backgroundControls
+                                Divider()
+                                layoutControls
+                            }.padding(.top, 12)
+                        }
+                        DisclosureGroup(L10n.text(en: "Manage Personal Styles", zh: "管理个人样式"), isExpanded: $showsPresetManagement) {
+                            presetControls.padding(.top, 12)
+                        }
                     }.padding(.trailing, 8)
                 }.frame(width: 340, height: 530)
                 preview.frame(width: 290, height: 530)
@@ -49,6 +64,46 @@ struct CapturePresentationView: View {
         .padding(20).textFieldStyle(.roundedBorder)
         .onAppear { draft = presentation }
         .task(id: draft) { await updatePreview() }
+    }
+
+    private var presetGallery: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.text(en: "Styles", zh: "样式")).font(.system(size: 13, weight: .semibold))
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                styleTile(L10n.text(en: "Original", zh: "原图"), colors: [Color(nsColor: .controlBackgroundColor)],
+                          selected: draft == CapturePresentation(), isOriginal: true) { draft = CapturePresentation(); presetID = nil }
+                ForEach(CaptureBuiltInBackground.allCases) { background in
+                    styleTile(background.title, colors: background.colors.map { Color(nsColor: $0.nsColor) },
+                              selected: draft.background == .builtIn && draft.builtIn == background && presetID == nil) {
+                        var value = CapturePresentation()
+                        value.background = .builtIn; value.builtIn = background
+                        value.padding = 32; value.cornerRadius = 16
+                        value.shadowOpacity = 0.2; value.shadowBlur = 16
+                        draft = value; presetID = nil
+                    }
+                }
+                ForEach(presets.presets) { preset in
+                    styleTile(preset.name, colors: [Color(nsColor: preset.presentation.color.nsColor),
+                                                  Color(nsColor: preset.presentation.secondaryColor.nsColor)],
+                              selected: presetID == preset.id) { draft = preset.presentation; presetID = preset.id }
+                }
+            }
+        }
+    }
+    private func styleTile(_ title: String, colors: [Color], selected: Bool, isOriginal: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(height: 74)
+                    .overlay { RoundedRectangle(cornerRadius: isOriginal ? 0 : 4).fill(.white.opacity(0.85)).padding(16).shadow(radius: isOriginal ? 0 : 3, y: isOriginal ? 0 : 2) }
+                HStack {
+                    Text(title).font(.system(size: 12)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor) }
+                }
+            }.padding(8).background(selected ? Color.accentColor.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 9))
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     private var backgroundControls: some View {

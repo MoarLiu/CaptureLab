@@ -1,12 +1,18 @@
 # CaptureLab
 
-CaptureLab is a small native macOS screenshot and annotation lab app.
+CaptureLab is a native macOS menu bar app for screenshots and annotation.
+
+The **0.12.0 / build 19** UI/UX implementation is documented in the
+[development plan](docs/0.12.0-development-plan.md) and
+[design and interaction specification](docs/0.12.0-ui-ux-spec.md).
+The [implementation and validation record](docs/0.12.0-validation.md) covers
+the current local development version; publication is separate.
 
 Current features:
 
 - per-action global shortcuts with conflict reporting and physical key recording
 - region, full screen, window, delayed, last-region, and frozen-screen capture modes
-- unified capture launcher; precise region size, aspect ratio, keyboard adjustment,
+- compact capture launcher; on-demand precise region size, aspect ratio, keyboard adjustment,
   guides, magnifier, and logical-point/output-pixel dimensions
 - configurable history retention (30, 100, or 300 captures and optional 1/7/30-day limits)
 - full thumbnail browser for all retained captures, with refresh, open, copy,
@@ -68,8 +74,10 @@ Pinned screenshots keep a snapshot of the edited image and close independently
 with Esc or Command-W. CaptureLab temporarily hides its windows, including pins,
 while taking a new screenshot.
 
-Screenshot Settings (Command-comma or the menu bar) controls the post-capture
-behavior, overlay corner/size/timeout/display, and history retention. The default
+Settings (Command-comma or the menu bar) uses one sidebar window for General,
+Shortcuts, Quick Access, Uploads, and About. General controls the post-capture
+behavior, history retention, and recognition languages. Quick Access controls
+the overlay; its preview size is under Appearance. The default
 confirms a region on mouse release, copies the original image, and opens the
 editor. Overlay and copy-only modes preserve the
 current edit. Overlays keep immutable capture pixels, so switching documents or
@@ -86,14 +94,31 @@ receiving app. Text fields retain their normal Command-V behavior. Unlock All
 Pins and Close All Pins stay available in the menu bar while pins are locked;
 arrow keys move an unlocked pin by one point, or ten with Shift.
 
-The editor's bottom selector switches between annotation editing, image/object
-editing, and the final output preview. The second toolbar row opens advanced
-styles, the layer panel, and background/templates. Images stay below annotations,
+The editor prioritizes selection, arrows, rectangles, text, and mosaic; More
+Tools lists the remaining tools and annotation styles by name. The main toolbar
+stays compact; a property row appears only for the current annotation or crop.
+Smaller windows keep Save Image and Copy & Close visible, with secondary actions
+in Image Actions. Successful actions use one confirmation message; the footer
+shows document information and progress. Failures remain visible until dismissed.
+Layers opens a collapsible object sidebar; precise image transforms stay folded
+until requested. Preview Output is available in Image Actions with a return to
+editing. Backgrounds start with style previews, with custom parameters folded.
+Images stay below annotations,
 so redactions cover the composed image; use the layer panel to reorder images.
 Annotations retain their own drawing order. The background surrounds the finished
 crop and does not change object coordinates. Copy, pin, drag-out, history, and R2
 use the same composition; R2 continues to upload PNG.
 
+Save Image opens the system file panel directly and writes the current composed
+PNG at its existing dimensions. Export is a separate action for PNG/JPEG options;
+Resize for Export is folded, and a new export follows the current image size.
+Copy & Close saves editable recovery, copies the result, then closes only after
+both operations succeed. Ordinary area capture is freeform and completes on
+mouse release; More Capture Options > Precise Area opens numeric selection
+controls only for that explicit task.
+
+The [0.12.0 release validation record](docs/0.12.0-release-validation.md) covers
+the menu/settings redesign, UI refinements, and candidate package checks.
 The [0.11.2 release validation record](docs/0.11.2-release-validation.md) covers
 history locking and private writes, linked data directories, thumbnail refresh,
 and bounded previews. Mosaic previews apply the exact effect before scaling;

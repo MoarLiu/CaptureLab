@@ -6,97 +6,57 @@ struct CaptureLabApp: App {
     @NSApplicationDelegateAdaptor(CaptureLabAppDelegate.self) private var appDelegate
     @StateObject private var model: CaptureLabViewModel
     @StateObject private var shortcutStore = CaptureShortcutStore()
-    @StateObject private var r2SettingsStore: CloudflareR2SettingsStore
     @StateObject private var globalHotKeyController = GlobalHotKeyController()
+    @StateObject private var settings: CaptureSettingsSession
+    @StateObject private var statusBar = CaptureStatusBarController()
+    @State private var configured = false
     @Environment(\.openWindow) private var openWindow
 
     init() {
-        let r2SettingsStore = CloudflareR2SettingsStore()
-        _r2SettingsStore = StateObject(wrappedValue: r2SettingsStore)
-        let model = CaptureLabViewModel(r2SettingsStore: r2SettingsStore)
+        let store = CloudflareR2SettingsStore()
+        let model = CaptureLabViewModel(r2SettingsStore: store)
+        let session = CaptureSettingsSession(store: store, retention: model.historyStore.retention)
         _model = StateObject(wrappedValue: model)
+        _settings = StateObject(wrappedValue: session)
         CaptureLabAppDelegate.documentModel = model
+        CaptureLabAppDelegate.settingsSession = session
     }
 
     var body: some Scene {
+        let _ = appDelegate.bootstrap = configureApplication
         Window(L10n.appName, id: "main") {
-            CaptureLabRootView(
-                model: model,
-                shortcutStore: shortcutStore,
-                showHistory: showHistory
-            )
-                .frame(minWidth: 1_080, minHeight: 620)
+            CaptureLabRootView(model: model, shortcutStore: shortcutStore, showHistory: showHistory)
+                .frame(minWidth: 900, minHeight: 600)
+                .onAppear(perform: configureApplication)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1_080, height: 620)
-
-        Window(L10n.historyBrowserTitle, id: "capture-history") {
-            CaptureHistoryView(model: model, showEditor: showMainWindow)
-                .frame(minWidth: 600, minHeight: 400)
-        }
-        .defaultSize(width: 780, height: 580)
-
-        Window(L10n.workflowSettings, id: "workflow-settings") {
-            CaptureWorkflowSettingsView(model: model)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 500, height: 620)
-
-        Window(L10n.shortcutSettingsTitle, id: "shortcut-settings") {
-            ShortcutSettingsView(
-                shortcutStore: shortcutStore,
-                controller: globalHotKeyController,
-                onSave: registerGlobalHotKey
+        .defaultSize(width: 1080, height: 680)
+        .commands {
+            CaptureLabCommands(
+                model: model, showMainWindow: showMainWindow, showHistory: showHistory,
+                showWorkflowSettings: { showSettings(nil) },
+                showAboutSettings: { showSettings(.about) }
             )
         }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 420, height: 220)
+
+        Window(L10n.historyBrowserTitle, id: "capture-history") {
+            CaptureHistoryView(model: model, showEditor: showMainWindow).frame(minWidth: 600, minHeight: 400)
+        }.defaultSize(width: 780, height: 580)
+
+        Window(L10n.text(en: "CaptureLab Settings", zh: "CaptureLab 设置"), id: "settings") {
+            CaptureSettingsView(session: settings, model: model, shortcuts: shortcutStore,
+                                hotKeys: globalHotKeyController, registerShortcut: registerGlobalHotKey)
+        }.defaultSize(width: 900, height: 640)
 
         Window(L10n.captureLauncher, id: "capture-launcher") {
-            CaptureLauncherView(model: model)
-        }.windowResizability(.contentSize)
-
-        Window(L10n.recognitionLanguages, id: "recognition-settings") {
-            RecognitionSettingsView()
+            CaptureLauncherView(model: model, shortcuts: shortcutStore)
         }.windowResizability(.contentSize)
 
         Window(L10n.text(en: "Recognition Results", zh: "识别结果"), id: "recognition-results") {
-            DirectRecognitionView(controller: model.directRecognition)
+            DirectRecognitionView(controller: model.directRecognition) { kind in
+                model.performCaptureAction(kind == .text ? .text : .qrCode)
+            }
         }.defaultSize(width: 560, height: 400)
-
-        Window(L10n.cloudflareR2SettingsTitle, id: "cloudflare-r2-settings") {
-            CloudflareR2SettingsView(store: r2SettingsStore)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 560, height: 440)
-
-        MenuBarExtra {
-            CaptureLabMenuBarView(
-                model: model,
-                shortcutStore: shortcutStore,
-                globalHotKeyController: globalHotKeyController,
-                showMainWindow: showMainWindow,
-                showHistory: showHistory,
-                showShortcutSettings: showShortcutSettings,
-                showR2Settings: showR2Settings,
-                showRecognitionSettings: { showUtilityWindow("recognition-settings") },
-                showWorkflowSettings: showWorkflowSettings
-            )
-        } label: {
-            Label(L10n.appName, systemImage: "viewfinder")
-                .onAppear(perform: configureGlobalHotKey)
-        }
-        .commands {
-            CaptureLabCommands(
-                model: model,
-                showMainWindow: showMainWindow,
-                showHistory: showHistory,
-                showR2Settings: showR2Settings,
-                showShortcutSettings: showShortcutSettings,
-                showRecognitionSettings: { showUtilityWindow("recognition-settings") },
-                showWorkflowSettings: showWorkflowSettings
-            )
-        }
     }
 
     private func showMainWindow() {
@@ -105,54 +65,40 @@ struct CaptureLabApp: App {
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
     }
-
-    private func configureGlobalHotKey() {
+    private func configureApplication() {
+        guard !configured else { return }
+        configured = true
         model.presentEditor = showMainWindow
-        appDelegate.openPendingProjects()
         model.presentRecognition = { showUtilityWindow("recognition-results") }
         model.presentCaptureLauncher = { showUtilityWindow("capture-launcher") }
+        model.presentUploadSettings = { showSettings(.upload) }
         for action in CaptureAction.allCases {
             _ = registerGlobalHotKey(action, shortcutStore.shortcut(for: action))
         }
+        statusBar.install(model: model, shortcuts: shortcutStore, hotKeys: globalHotKeyController,
+                          showEditor: showMainWindow, showHistory: showHistory,
+                          showSettings: { category, shortcut in showSettings(category, shortcut: shortcut) })
+        appDelegate.openPendingProjects()
     }
-
     private func showUtilityWindow(_ id: String) {
         NSApp.setActivationPolicy(.regular)
         openWindow(id: id)
         NSApp.activate(ignoringOtherApps: true)
     }
-
     private func showHistory() {
         model.refreshHistory()
-        NSApp.setActivationPolicy(.regular)
-        openWindow(id: "capture-history")
-        NSApp.activate(ignoringOtherApps: true)
+        showUtilityWindow("capture-history")
     }
-
+    private func showSettings(_ category: CaptureSettingsSection?, shortcut: CaptureAction? = nil) {
+        settings.navigate(to: category, shortcut: shortcut)
+        showUtilityWindow("settings")
+    }
     private func registerGlobalHotKey(_ action: CaptureAction, _ shortcut: CaptureKeyboardShortcut?) -> String? {
-        let didRegister = globalHotKeyController.configure(action: action, shortcut: shortcut) {
+        let registered = globalHotKeyController.configure(action: action, shortcut: shortcut) {
             model.performCaptureAction(action)
         }
-        return didRegister ? nil : globalHotKeyController.actionErrors[action]
+        return registered ? nil : globalHotKeyController.actionErrors[action]
             ?? L10n.globalShortcutRegistrationFailed(shortcut?.displayTitle ?? action.title)
-    }
-
-    private func showWorkflowSettings() {
-        NSApp.setActivationPolicy(.regular)
-        openWindow(id: "workflow-settings")
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func showShortcutSettings() {
-        NSApp.setActivationPolicy(.regular)
-        openWindow(id: "shortcut-settings")
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func showR2Settings() {
-        NSApp.setActivationPolicy(.regular)
-        openWindow(id: "cloudflare-r2-settings")
-        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
@@ -161,10 +107,13 @@ final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
     static let mainWindowIdentifier = NSUserInterfaceItemIdentifier("CaptureLab.main-window")
     private static var shouldSuppressNextMainWindow = true
     static weak var documentModel: CaptureLabViewModel?
+    static weak var settingsSession: CaptureSettingsSession?
+    var bootstrap: (() -> Void)?
     private var pendingProjectURLs: [URL] = []
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Self.documentModel?.prepareForTermination() == false ? .terminateCancel : .terminateNow
+        guard Self.settingsSession?.prepareForClose() != false else { return .terminateCancel }
+        return Self.documentModel?.prepareForTermination() == false ? .terminateCancel : .terminateNow
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -203,6 +152,7 @@ final class CaptureLabAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        bootstrap?()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

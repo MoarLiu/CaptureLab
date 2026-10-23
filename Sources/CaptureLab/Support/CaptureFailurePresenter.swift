@@ -20,7 +20,11 @@ final class CaptureFailurePresenter {
                 let failure = pending.removeFirst()
                 let alert = Self.makeAlert(title: failure.title, message: failure.message)
                 NSApp.activate(ignoringOtherApps: true)
-                _ = alert.captureLabRunModal()
+                let response = alert.captureLabRunModal()
+                if failure.message == L10n.screenRecordingPermission, response == .alertSecondButtonReturn,
+                   let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                    NSWorkspace.shared.open(url)
+                }
             }
             isPresenting = false
         }
@@ -32,6 +36,7 @@ final class CaptureFailurePresenter {
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: L10n.ok)
+        if message == L10n.screenRecordingPermission { alert.addButton(withTitle: L10n.openScreenRecordingSettings) }
         return alert
     }
 }

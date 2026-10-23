@@ -46,13 +46,20 @@ enum L10n {
     static var openAndPaste: String { text(en: "Open and Paste", zh: "打开与粘贴") }
     static var currentImageMenu: String { text(en: "Current Image", zh: "当前图片") }
     static var overlaysAndPins: String { text(en: "Overlays and Pins", zh: "浮层与贴图") }
-    static var settingsMenu: String { text(en: "Settings", zh: "设置") }
-    static var otherSettings: String { text(en: "Other Settings", zh: "其他设置") }
-    static var captureAndHistorySettings: String { text(en: "Capture and History…", zh: "截图与历史…") }
     static var shortcutUnavailable: String { text(en: "Shortcut Unavailable…", zh: "快捷键不可用…") }
     static var shareMenu: String { text(en: "Share", zh: "分享") }
-    static var savePNGMenu: String { text(en: "Save PNG…", zh: "保存 PNG…") }
-    static var exportImageMenu: String { text(en: "Export PNG / JPEG…", zh: "导出 PNG / JPEG…") }
+    static var savePNGMenu: String { text(en: "Save Image…", zh: "保存图片…") }
+    static var exportImageMenu: String { text(en: "Export…", zh: "导出…") }
+    static var preciseRegion: String { text(en: "Precise Area…", zh: "精确框选…") }
+    static var settingsTitle: String { text(en: "Settings…", zh: "设置…") }
+    static var copyAndClose: String { text(en: "Copy & Close", zh: "复制并关闭") }
+    static var previewOutput: String { text(en: "Preview Output", zh: "预览成品") }
+    static var moreTools: String { text(en: "More Tools", zh: "更多工具") }
+    static var screenRecordingPermission: String {
+        text(en: "Allow CaptureLab in System Settings → Privacy & Security → Screen Recording, then try again.",
+             zh: "请在系统设置 → 隐私与安全 → 屏幕录制中允许 CaptureLab，然后重试。")
+    }
+    static var openScreenRecordingSettings: String { text(en: "Open Screen Recording Settings…", zh: "打开屏幕录制设置…") }
     static var openProjectMenu: String { text(en: "Open Project…", zh: "打开项目…") }
     static var saveProjectMenu: String { text(en: "Save Editable Project…", zh: "保存可编辑项目…") }
     static var uploadToR2: String { text(en: "Upload to R2", zh: "上传到 R2") }
@@ -84,8 +91,6 @@ enum L10n {
         text(en: "Could not install the global shortcut handler.", zh: "无法安装全局快捷键处理器。")
     }
 
-    static var saveAs: String { text(en: "Save As", zh: "保存为") }
-    static var done: String { text(en: "Done", zh: "完成") }
     static var finishEditingFailedTitle: String {
         text(en: "Could not finish editing", zh: "无法完成编辑")
     }

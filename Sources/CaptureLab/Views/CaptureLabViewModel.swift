@@ -120,6 +120,11 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var isCapturing = false
     @Published private(set) var isRecognizingText = false
     @Published private(set) var statusMessage = L10n.ready
+    struct SuccessFeedback: Equatable {
+        let id = UUID()
+        let message: String
+    }
+    @Published private(set) var successFeedback: SuccessFeedback?
     @Published private(set) var isCheckingForUpdates = false
     @Published private(set) var isUploading = false
     @Published private(set) var historyItems: [CaptureHistoryItem]
@@ -138,6 +143,7 @@ final class CaptureLabViewModel: ObservableObject {
     var presentEditor: (() -> Void)?
     var presentRecognition: (() -> Void)?
     var presentCaptureLauncher: (() -> Void)?
+    var presentUploadSettings: (() -> Void)?
     lazy var directRecognition = DirectRecognitionController(pasteboard: pasteboard, text: textRecognitionOperation)
 
     func performCaptureAction(_ action: CaptureAction) {
@@ -253,6 +259,22 @@ final class CaptureLabViewModel: ObservableObject {
 
     var canStartCapture: Bool {
         !isCapturing && !isCheckingForUpdates && pendingUpdateInstallation == nil
+    }
+
+    var canCheckForUpdates: Bool { canStartCapture }
+
+    var annotationEditingTool: CaptureTool {
+        guard let annotation = annotations.first(where: { $0.id == selectedAnnotationID }) else { return selectedTool }
+        return CaptureTool(rawValue: annotation.kind.rawValue) ?? selectedTool
+    }
+
+    var showsEditorOptions: Bool {
+        hasImage && !showsOutputPreview && !isEditingObjects && annotationEditingTool != .select
+    }
+
+    private func reportSuccess(_ message: String) {
+        statusMessage = message
+        successFeedback = SuccessFeedback(message: message)
     }
 
     var canUndoAnnotation: Bool {
@@ -774,7 +796,7 @@ final class CaptureLabViewModel: ObservableObject {
         guard let url = saveDestinationOperation(snapshot.fileName) else { return }
         do {
             try snapshot.data.write(to: url, options: .atomic)
-            statusMessage = L10n.saved(url.lastPathComponent)
+            reportSuccess(L10n.saved(url.lastPathComponent))
         } catch { reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle) }
     }
     func pinSnapshot(_ snapshot: CaptureImageSnapshot) {
@@ -984,7 +1006,7 @@ final class CaptureLabViewModel: ObservableObject {
     private func copyRenderedImage(_ rendered: NSImage, successStatus: String, reportsFailure: Bool = true) -> Bool {
         pasteboard.clearContents()
         let didCopy = pasteboard.writeObjects([rendered])
-        statusMessage = didCopy ? successStatus : L10n.imageCopyFailed
+        if didCopy { reportSuccess(successStatus) } else { statusMessage = L10n.imageCopyFailed }
         if !didCopy {
             if reportsFailure {
                 reportFailure(L10n.imageCopyFailed, title: L10n.imageCopyFailedTitle)
@@ -1019,7 +1041,7 @@ final class CaptureLabViewModel: ObservableObject {
 
         do {
             try data.write(to: url, options: .atomic)
-            statusMessage = L10n.saved(url.lastPathComponent)
+            reportSuccess(L10n.saved(url.lastPathComponent))
         } catch {
             reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle)
         }
@@ -1118,7 +1140,7 @@ final class CaptureLabViewModel: ObservableObject {
             panel.nameFieldStringValue = "CaptureLab.capturelab"
             guard panel.runModal() == .OK, let url = panel.url else { return }
             try CaptureProjectStore.write(data, to: url)
-            statusMessage = L10n.saved(url.lastPathComponent)
+            reportSuccess(L10n.saved(url.lastPathComponent))
         } catch { reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle) }
     }
 
@@ -1176,7 +1198,7 @@ final class CaptureLabViewModel: ObservableObject {
             let snapshot = try historyImageSnapshot(for: item)
             guard let url = saveDestinationOperation(snapshot.item.fileName) else { return }
             try snapshot.data.write(to: url, options: .atomic)
-            statusMessage = L10n.saved(url.lastPathComponent)
+            reportSuccess(L10n.saved(url.lastPathComponent))
         } catch {
             reportFailure(error.localizedDescription, title: L10n.imageSaveFailedTitle)
         }
@@ -1209,6 +1231,10 @@ final class CaptureLabViewModel: ObservableObject {
         do {
             settings = try r2SettingsStore.requiredSettings()
         } catch {
+            if case CloudflareR2Error.settingsNotConfigured = error, let presentUploadSettings {
+                presentUploadSettings()
+                return
+            }
             presentUploadFailure(error)
             return
         }
@@ -1233,7 +1259,7 @@ final class CaptureLabViewModel: ObservableObject {
                 }
                 self.pasteboard.clearContents()
                 self.pasteboard.setString(result.url, forType: .string)
-                self.statusMessage = L10n.uploadedURLCopied
+                self.reportSuccess(L10n.uploadedURLCopied)
                 onSuccess?(result.url)
             } catch {
                 guard let self, self.uploadRequestID == requestID else {
@@ -1313,7 +1339,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-        statusMessage = L10n.ocrTextCopied
+        reportSuccess(L10n.ocrTextCopied)
     }
 
     func clearOCRText() {
@@ -1580,8 +1606,8 @@ final class CaptureLabViewModel: ObservableObject {
         }
     }
 
-    private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.2"
+    static var currentAppVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.12.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

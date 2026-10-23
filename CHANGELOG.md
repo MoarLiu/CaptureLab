@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.12.0 - 2026-10-24
+
+- Rebuild the menu bar menu with native icons, shortcut columns, task groups,
+  and contextual overlay/pin management. Preserve working shortcuts after a
+  failed replacement and retain recovery actions for click-through pins.
+- Combine preferences in one sidebar window with General, Shortcuts, Quick
+  Access, Uploads, and About. Record shortcuts in place, keep unsaved upload
+  drafts across pages, and protect those drafts when closing or quitting.
+- Keep ordinary area capture free of width/ratio panels. Offer numeric controls
+  through an explicit Precise Area action and simplify the capture launcher.
+- Prioritize common annotation tools, contextual properties, and a collapsible
+  layer sidebar. Fold precise transforms and background customization; use
+  style previews for backgrounds.
+- Save Image goes directly to the system file panel. Rename Done to Copy &
+  Close, preserve its recovery gate, and stop carrying another screenshot's
+  dimensions into a new export.
+
+- Reclaim canvas space with a single main toolbar while selecting or viewing;
+  show annotation/crop properties only when relevant. Keep result actions visible
+  in smaller windows and remove the redundant layer-panel header.
+- Add clear recognition empty, progress, failure and result states with a new
+  area-selection action. Clarify upload credential reuse, shortcut registration,
+  and update availability; confirm repeated successful actions consistently.
+
+Local development validation: 410 tests pass, strict ARM64/x86_64 Release builds
+target macOS 13, and native Chinese/English light/dark UI checks are recorded in
+the [0.12.0 validation record](docs/0.12.0-validation.md). Verified packages and
+checksums are in the [release validation record](docs/0.12.0-release-validation.md).
+Publication has been approved. Manual and hardware validation limits remain
+documented; packages retain the existing self-signed identity without notarization.
+
 ## 0.11.2 - 2026-10-23
 
 - Keep the editor responsive when another instance owns the history lock.

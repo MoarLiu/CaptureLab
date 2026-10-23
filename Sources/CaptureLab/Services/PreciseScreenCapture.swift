@@ -15,7 +15,7 @@ final class PreciseScreenCapture {
             try await Task.sleep(nanoseconds: UInt64(max(0, min(seconds, 60))) * 1_000_000_000)
         }
         guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
-            throw CaptureLabError.captureFailed(L10n.text(en: "Allow CaptureLab in System Settings → Privacy & Security → Screen Recording, then try again.", zh: "请在系统设置 → 隐私与安全 → 屏幕录制中允许 CaptureLab，然后重试。"))
+            throw CaptureLabError.captureFailed(L10n.screenRecordingPermission)
         }
         let displays = CaptureDisplay.current()
         let rect: CGRect
@@ -28,7 +28,7 @@ final class PreciseScreenCapture {
             rect = saved
         } else {
             frames = try snapshot(displays)
-            rect = try await selector.select(displays: displays, frames: frames, frozen: frozen)
+            rect = try await selector.select(displays: displays, frames: frames, frozen: frozen, precise: mode == .preciseRegion)
         }
         try Task.checkCancellation()
         guard CaptureDisplay.current() == displays else { throw CaptureLabError.captureFailed(L10n.invalidLastRegion) }

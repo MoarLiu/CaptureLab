@@ -5,19 +5,16 @@ struct CaptureLabCommands: Commands {
     @ObservedObject var model: CaptureLabViewModel
     let showMainWindow: () -> Void
     let showHistory: () -> Void
-    let showR2Settings: () -> Void
-    let showShortcutSettings: () -> Void
-    let showRecognitionSettings: () -> Void
     var showWorkflowSettings: () -> Void = {}
+    var showAboutSettings: () -> Void = {}
 
     var body: some Commands {
         CommandGroup(replacing: .appSettings) {
-            Button(L10n.workflowSettings, action: showWorkflowSettings)
+            Button(L10n.settingsTitle, action: showWorkflowSettings)
                 .keyboardShortcut(",", modifiers: .command)
-            Menu(L10n.otherSettings) {
-                CaptureOtherSettingsItems(showShortcutSettings: showShortcutSettings,
-                    showRecognitionSettings: showRecognitionSettings, showR2Settings: showR2Settings)
-            }
+        }
+        CommandGroup(replacing: .appInfo) {
+            Button(L10n.text(en: "About CaptureLab…", zh: "关于 CaptureLab…"), action: showAboutSettings)
         }
         CommandGroup(after: .appInfo) {
             CaptureUpdateButton(model: model)
@@ -95,75 +92,6 @@ struct CaptureLabCommands: Commands {
     }
 }
 
-struct CaptureLabMenuBarView: View {
-    @ObservedObject var model: CaptureLabViewModel
-    @ObservedObject var shortcutStore: CaptureShortcutStore
-    @ObservedObject var globalHotKeyController: GlobalHotKeyController
-    let showMainWindow: () -> Void
-    let showHistory: () -> Void
-    let showShortcutSettings: () -> Void
-    let showR2Settings: () -> Void
-    let showRecognitionSettings: () -> Void
-    var showWorkflowSettings: () -> Void = {}
-
-    var body: some View {
-        // Display the Carbon shortcut without registering another SwiftUI binding.
-        CaptureBasicMenuItems(model: model, showEditor: showMainWindow,
-            regionTitle: L10n.captureRegion + "  " + shortcutStore.captureShortcut.displayTitle)
-        Menu(L10n.moreCapture) {
-            CaptureMoreMenuItems(model: model, showEditor: showMainWindow)
-        }.disabled(!model.canStartCapture)
-        Menu(L10n.recognitionMenu) {
-            CaptureRecognitionMenuItems(model: model, showEditor: showMainWindow)
-        }
-        Divider()
-        Button(L10n.openEditor, action: showMainWindow).disabled(model.isCapturing)
-        Menu(L10n.recentAndHistory) {
-            if model.historyItems.isEmpty {
-                Text(L10n.noRecentCaptures)
-            } else {
-                ForEach(Array(model.historyItems.prefix(8))) { item in
-                    Button(item.displayTitle) {
-                        showMainWindow()
-                        model.openHistoryItem(item)
-                    }.disabled(!model.canStartCapture)
-                }
-                Divider()
-            }
-            Button(L10n.showAllHistory, action: showHistory).disabled(model.isCapturing)
-        }
-        Menu(L10n.openAndPaste) {
-            CaptureOpenMenuItems(model: model, showEditor: showMainWindow)
-            CapturePasteImageButton(model: model, showEditor: showMainWindow)
-        }.disabled(!model.canStartCapture)
-        Menu(L10n.currentImageMenu) {
-            Button(L10n.copyImage) { model.copyRenderedImage() }
-            CaptureSaveMenuItems(model: model, showEditor: showMainWindow)
-            Divider()
-            CaptureUploadButton(model: model)
-            Button(L10n.pinImage, action: model.pinCurrentCapture)
-        }.disabled(!model.hasImage || !model.canStartCapture)
-        Menu(L10n.overlaysAndPins) {
-            CaptureOverlayMenu(controller: model.overlayController)
-            Divider()
-            CapturePinMenu()
-        }.disabled(model.isCapturing)
-        Divider()
-        Menu(L10n.settingsMenu) {
-            Button(L10n.captureAndHistorySettings, action: showWorkflowSettings)
-            CaptureOtherSettingsItems(showShortcutSettings: showShortcutSettings,
-                showRecognitionSettings: showRecognitionSettings, showR2Settings: showR2Settings)
-        }
-        if let error = globalHotKeyController.registrationError {
-            Button(L10n.shortcutUnavailable, action: showShortcutSettings)
-                .help(error)
-                .accessibilityLabel(L10n.shortcutUnavailable + " " + error)
-        }
-        CaptureUpdateButton(model: model)
-        Button(L10n.quitCaptureLab) { NSApp.terminate(nil) }
-    }
-}
-
 private struct CaptureBasicMenuItems: View {
     @ObservedObject var model: CaptureLabViewModel
     let showEditor: () -> Void
@@ -189,6 +117,7 @@ private struct CaptureMoreMenuItems: View {
             Button(L10n.lastRegion) { model.capture(.lastRegion, onSuccess: showEditor) }
         }
         Button(L10n.frozenRegion) { model.capture(.frozenRegion, onSuccess: showEditor) }
+        Button(L10n.preciseRegion) { model.capture(.preciseRegion, onSuccess: showEditor) }
         Button(L10n.captureDelayedRegion(3)) { model.capture(.delayedRegion(seconds: 3), onSuccess: showEditor) }
         Button(L10n.captureDelayedRegion(5)) { model.capture(.delayedRegion(seconds: 5), onSuccess: showEditor) }
         Button(L10n.captureLauncher) { model.performCaptureAction(.launcher) }
@@ -308,17 +237,6 @@ private struct CaptureToolMenuItems: View {
     }
 }
 
-private struct CaptureOtherSettingsItems: View {
-    let showShortcutSettings: () -> Void
-    let showRecognitionSettings: () -> Void
-    let showR2Settings: () -> Void
-    var body: some View {
-        Button(L10n.shortcutConfiguration, action: showShortcutSettings)
-        Button(L10n.recognitionLanguages, action: showRecognitionSettings)
-        Button(L10n.cloudflareR2SettingsMenuItem, action: showR2Settings)
-    }
-}
-
 private struct CaptureUpdateButton: View {
     @ObservedObject var model: CaptureLabViewModel
     var body: some View {
@@ -364,23 +282,5 @@ private extension CaptureTool {
         case .spotlight: return "t"
         case .blur: return "b"
         }
-    }
-}
-
-private struct CaptureOverlayMenu: View {
-    @ObservedObject var controller: CaptureQuickAccessController
-    var body: some View {
-        Button(L10n.overlayRestore, action: controller.restoreLast)
-            .disabled(controller.lastClosed == nil)
-        Button(controller.isTemporarilyHidden ? L10n.overlayShow : L10n.overlayHide, action: controller.toggleHidden)
-            .disabled(controller.entries.isEmpty)
-    }
-}
-
-private struct CapturePinMenu: View {
-    @ObservedObject var controller = CapturePinController.shared
-    var body: some View {
-        Button(L10n.pinUnlockAll, action: controller.unlockAll).disabled(controller.windows.isEmpty)
-        Button(L10n.pinCloseAll, action: controller.closeAll).disabled(controller.windows.isEmpty)
     }
 }

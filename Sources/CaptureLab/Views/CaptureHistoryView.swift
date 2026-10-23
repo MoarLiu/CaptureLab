@@ -50,6 +50,7 @@ struct CaptureHistoryView: View {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 40))
                     Text(history.isBusy ? L10n.text(en: "Try refreshing history shortly.", zh: "请稍后刷新历史记录。") : L10n.noRecentCaptures)
+                    Button(L10n.captureRegion, action: model.captureRegion).disabled(!model.canStartCapture)
                 }
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -30,7 +30,7 @@ enum CaptureAction: String, CaseIterable, Identifiable, Codable {
 extension L10n {
     static var lastRegion: String { text(en: "Capture Last Region", zh: "重截上次区域") }
     static var frozenRegion: String { text(en: "Freeze and Select", zh: "冻结画面后框选") }
-    static var captureLauncher: String { text(en: "Capture Launcher", zh: "统一截图入口") }
+    static var captureLauncher: String { text(en: "Choose Capture Mode…", zh: "选择截图方式…") }
     static var directText: String { text(en: "Select Text and Copy", zh: "框选识字并复制") }
     static var directQRCode: String { text(en: "Recognize QR Codes", zh: "框选识别二维码") }
     static var invalidLastRegion: String {

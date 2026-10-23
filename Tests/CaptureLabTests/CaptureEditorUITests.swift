@@ -94,9 +94,15 @@ final class CaptureEditorUITests: XCTestCase {
             fontFamily: "Helvetica", fontWeight: .bold, textAlignment: .left,
             textBackgroundColor: CaptureAnnotationColor(.black), textBorderColor: CaptureAnnotationColor(.white))
         model.commitObjects(layers: [layer], annotations: [
-            .init(kind: .text, normalizedRect: CGRect(x: 0.09, y: 0.12, width: 0.8, height: 0.2), text: "CaptureLab 0.9.0", appearance: appearance),
+            .init(kind: .text, normalizedRect: CGRect(x: 0.09, y: 0.12, width: 0.8, height: 0.2), text: "CaptureLab 0.12.0", appearance: appearance),
             .curvedArrow(start: CGPoint(x: 0.18, y: 0.67), end: CGPoint(x: 0.65, y: 0.58), control: CGPoint(x: 0.32, y: 0.35))
         ])
+        let compactRoot = CaptureLabRootView(model: model, shortcutStore: CaptureShortcutStore(defaults: defaults), showHistory: {})
+        for tool in [CaptureTool.select, .arrow, .crop] {
+            model.selectedTool = tool
+            try await renderPanel(compactRoot, size: CGSize(width: 900, height: 600), name: "editor-minimum-\(tool.rawValue)")
+        }
+        model.selectedTool = .select
         model.selectedObjects = [.image(layer.id)]
         model.isEditingObjects = true
         let root = CaptureLabRootView(model: model, shortcutStore: CaptureShortcutStore(defaults: defaults), showHistory: {})
@@ -116,7 +122,7 @@ final class CaptureEditorUITests: XCTestCase {
         try await renderPanel(CaptureAdvancedAnnotationStyleView(appearance: .constant(appearance), tool: .text)
             .defaultAppStorage(defaults), size: CGSize(width: 372, height: 640), name: "text-style")
         try await renderPanel(CapturePresentationView(presentation: .constant(presentation), sourceSize: source.captureLabPixelSize,
-            sourceImage: source, onApply: { _ in }), size: CGSize(width: 690, height: 660), name: "background")
+            sourceImage: source, onApply: { _ in }, presetStore: CapturePresentationStore(url: fixtureRoot.appendingPathComponent("presets.json"))), size: CGSize(width: 690, height: 660), name: "background")
         let rendered = try XCTUnwrap(model.renderedSnapshot()?.image)
         try await renderPanel(CaptureExportView(image: rendered), size: CGSize(width: 670, height: 460), name: "export")
     }
@@ -165,7 +171,7 @@ final class CaptureEditorUITests: XCTestCase {
         let root = CaptureLabRootView(model: model, shortcutStore: CaptureShortcutStore(defaults: defaults), showHistory: {})
         let hosting = NSHostingView(rootView: root)
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 1_080, height: 620),
+            contentRect: CGRect(x: 0, y: 0, width: 900, height: 620),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
@@ -178,21 +184,30 @@ final class CaptureEditorUITests: XCTestCase {
         window.display()
 
         XCTAssertTrue(window.isVisible)
-        XCTAssertLessThanOrEqual(hosting.fittingSize.width, 1_080, "The editor's content must fit its minimum supported width.")
-        XCTAssertEqual(hosting.bounds.width, 1_080, accuracy: 1)
-        let optionRow = CGRect(x: 0, y: 52, width: hosting.bounds.width, height: 46)
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, 900, "The editor's content must fit its minimum supported width.")
+        XCTAssertEqual(hosting.bounds.width, 900, accuracy: 1)
+        let optionRow = CGRect(x: 0, y: 52, width: hosting.bounds.width, height: 42)
+        XCTAssertFalse(model.showsEditorOptions)
         let nativeControls = nativeDescendants(of: hosting).filter { $0 is NSColorWell || $0 is NSStepper }
-        XCTAssertEqual(nativeControls.filter { $0 is NSColorWell }.count, 1)
-        XCTAssertEqual(nativeControls.filter { $0 is NSStepper }.count, 2)
-        for control in nativeControls {
-            XCTAssertFalse(control.isHiddenOrHasHiddenAncestor)
-            XCTAssertTrue(optionRow.contains(control.convert(control.bounds, to: hosting)), "Style controls must be visible inside the second toolbar row.")
+        XCTAssertEqual(nativeControls.filter { $0 is NSColorWell }.count, 0, "Selection should not show unrelated color controls.")
+        XCTAssertEqual(nativeControls.filter { $0 is NSStepper }.count, 0, "Selection should not show font-size or line-width parameters.")
+        for (tool, stepperCount) in [(CaptureTool.arrow, 1), (.text, 1)] {
+            model.selectedTool = tool
+            drainUI(); hosting.layoutSubtreeIfNeeded()
+            let controls = nativeDescendants(of: hosting)
+            XCTAssertEqual(controls.filter { $0 is NSColorWell }.count, 1)
+            XCTAssertEqual(controls.filter { $0 is NSStepper }.count, stepperCount, "Only properties of the active tool should be shown.")
+            for control in controls.filter({ $0 is NSColorWell || $0 is NSStepper }) {
+                XCTAssertTrue(optionRow.contains(control.convert(control.bounds, to: hosting)), "Properties must remain within their contextual row.")
+            }
         }
+        model.selectedTool = .select
+        drainUI(); hosting.layoutSubtreeIfNeeded()
+        XCTAssertFalse(model.showsEditorOptions)
+        XCTAssertFalse(nativeDescendants(of: hosting).contains { $0 is NSColorWell || $0 is NSStepper })
         let bitmap = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
         hosting.display()
         hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
-        XCTAssertGreaterThan(luminanceRange(in: optionRow, bitmap: bitmap, view: hosting), 0.15,
-            "The second toolbar row must render controls and labels rather than a blank background.")
         if let outputPath = ProcessInfo.processInfo.environment["CAPTURELAB_UI_SMOKE_OUTPUT"] {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: outputPath))
         }
@@ -214,7 +229,7 @@ final class CaptureEditorUITests: XCTestCase {
         drainUI()
         hosting.layoutSubtreeIfNeeded()
         window.display()
-        XCTAssertLessThanOrEqual(hosting.fittingSize.width, 1_080)
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, 900)
         if let outputPath = ProcessInfo.processInfo.environment["CAPTURELAB_UI_SMOKE_CROP_OUTPUT"] {
             let croppedUI = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
             hosting.cacheDisplay(in: hosting.bounds, to: croppedUI)

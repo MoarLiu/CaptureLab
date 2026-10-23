@@ -4,173 +4,122 @@ import SwiftUI
 struct ShortcutSettingsView: View {
     @ObservedObject var shortcutStore: CaptureShortcutStore
     @ObservedObject var controller: GlobalHotKeyController
+    @ObservedObject var session: CaptureSettingsSession
     let onSave: (CaptureAction, CaptureKeyboardShortcut?) -> String?
-    @State private var selectedAction = CaptureAction.region
-    @State private var draftShortcut = CaptureKeyboardShortcut.defaultCapture
-    @State private var enabled = true
-    @State private var saveError: String?
-    @State private var saved = false
-    @State private var window: NSWindow?
+    @State private var errors: [CaptureAction: String] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(L10n.shortcutSettingsTitle).font(.title2)
-            Picker(L10n.text(en: "Action", zh: "操作"), selection: $selectedAction) {
-                ForEach(CaptureAction.allCases) { action in
-                    Text(action.title + "  " + (shortcutStore.shortcut(for: action)?.displayTitle ?? "—")).tag(action)
+        VStack(alignment: .leading, spacing: 24) {
+            CaptureSettingsNote(text: L10n.text(en: "Click a shortcut to record a new combination. Press Escape to cancel.", zh: "点击快捷键录制新组合，按 Esc 取消。"))
+            group(L10n.text(en: "Capture", zh: "截图"), actions: [.region, .window, .fullScreen, .lastRegion, .delayedRegion, .launcher])
+            group(L10n.text(en: "Text & QR Codes", zh: "文字与二维码"), actions: [.text, .qrCode])
+        }
+        .onChange(of: session.recordingAction) { action in
+            controller.recordShortcut = action.map { target in { value in
+                guard session.recordingAction == target, session.section == .shortcuts else { return }
+                save(value, for: target)
+            } }
+        }
+        .onDisappear { session.recordingAction = nil; controller.recordShortcut = nil }
+    }
+    private func group(_ title: String, actions: [CaptureAction]) -> some View {
+        CaptureSettingsGroup(title: title) {
+            ForEach(actions) { action in
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(action.title).font(.system(size: 13))
+                            Text(registrationStatus(for: action)).font(.system(size: 11)).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        if session.recordingAction == action {
+                            ShortcutRecorderBridge(onShortcut: {
+                                if session.recordingAction == action { save($0, for: action) }
+                            }, onCancel: {
+                                if session.recordingAction == action { session.recordingAction = nil }
+                            })
+                                .frame(width: 174, height: 32)
+                                .overlay { Text(L10n.text(en: "Press shortcut…", zh: "按下组合键…")).font(.system(size: 12)).allowsHitTesting(false) }
+                                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                                .overlay { RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor, lineWidth: 1) }
+                        } else {
+                            Button {
+                                errors[action] = nil
+                                session.recordingAction = action
+                            } label: {
+                                Text(shortcutStore.shortcut(for: action)?.displayTitle ?? L10n.text(en: "Record shortcut", zh: "录制快捷键"))
+                                    .font(.system(size: 13, weight: shortcutStore.shortcut(for: action) == nil ? .regular : .medium))
+                                    .frame(width: 166, height: 28)
+                            }.buttonStyle(.bordered)
+                                .accessibilityLabel(action.title + ": " + (shortcutStore.shortcut(for: action)?.displayTitle ?? L10n.text(en: "Not set", zh: "未设置")))
+                        }
+                        Button { save(nil, for: action) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).disabled(action == .region || shortcutStore.shortcut(for: action) == nil)
+                            .accessibilityLabel(L10n.text(en: "Clear shortcut for \(action.title)", zh: "清除\(action.title)快捷键"))
+                    }.padding(.horizontal, 16).padding(.vertical, 12)
+                    if let error = errors[action] ?? controller.actionErrors[action] {
+                        CaptureSettingsNote(text: error, isError: true).padding(.horizontal, 16).padding(.bottom, 12)
+                    }
                 }
-            }
-            if selectedAction != .region {
-                Toggle(L10n.text(en: "Enable global shortcut", zh: "启用全局快捷键"), isOn: $enabled)
-            }
-            if enabled {
-                ShortcutRecorderView(shortcut: $draftShortcut, cancelAction: { window?.close() }).frame(height: 48)
-                Text(L10n.text(en: "Press a key with Command, Control or Option. Physical key positions are preserved, including Shift and non-US keyboards.",
-                    zh: "按下包含 Command、Control 或 Option 的组合键。按实体键位保存，支持 Shift 组合和非美式键盘。"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let message = saveError ?? controller.actionErrors[selectedAction] {
-                Text(message).foregroundStyle(.red).font(.caption).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                if saved { Text(L10n.text(en: "Saved", zh: "已保存")).foregroundStyle(.secondary) }
-                Spacer()
-                Button(L10n.cancel) { window?.close() }
-                Button(L10n.save, action: save).keyboardShortcut(.defaultAction)
+                .background(session.focusedShortcut == action ? Color.accentColor.opacity(0.06) : .clear)
+                .accessibilityElement(children: .contain)
+                .id(action)
+                if action != actions.last { Divider().padding(.horizontal, 16) }
             }
         }
-        .padding(22).frame(width: 500)
-        .background(ShortcutSettingsWindowReader(window: $window))
-        .onAppear(perform: load)
-        .onChange(of: selectedAction) { _ in load() }
-        .onChange(of: draftShortcut) { _ in saved = false; saveError = nil }
-        .onChange(of: enabled) { _ in saved = false; saveError = nil }
-        .captureLabWindowCloseShortcuts()
     }
-    private func load() {
-        let value = shortcutStore.shortcut(for: selectedAction)
-        enabled = value != nil
-        draftShortcut = value ?? .defaultCapture
-        saveError = nil; saved = false
+    private func registrationStatus(for action: CaptureAction) -> String {
+        if let registered = controller.registeredShortcut(for: action) {
+            return L10n.text(en: "Active: \(registered.displayTitle)", zh: "已注册：\(registered.displayTitle)")
+        }
+        if controller.actionErrors[action] != nil { return L10n.text(en: "Unavailable — see the reason below", zh: "注册失败，原因见下方") }
+        return shortcutStore.shortcut(for: action) == nil
+            ? L10n.text(en: "Not set", zh: "未设置")
+            : L10n.text(en: "Not registered", zh: "尚未注册")
     }
-    private func save() {
-        let value = enabled ? draftShortcut : nil
-        if let value, let conflict = shortcutStore.conflict(for: value, action: selectedAction) {
-            saveError = L10n.text(en: "Already assigned to \(conflict.title).", zh: "已用于“\(conflict.title)”。")
+    private func save(_ value: CaptureKeyboardShortcut?, for action: CaptureAction) {
+        if let value, let conflict = shortcutStore.conflict(for: value, action: action) {
+            errors[action] = L10n.text(en: "Already assigned to \(conflict.title).", zh: "已用于“\(conflict.title)”。")
+            session.recordingAction = nil
             return
         }
-        saved = shortcutStore.save(value, for: selectedAction) {
-            saveError = onSave(selectedAction, value)
-            return saveError == nil
+        var failure: String?
+        let saved = shortcutStore.save(value, for: action) {
+            failure = onSave(action, value)
+            return failure == nil
         }
-        if !saved && saveError == nil { saveError = L10n.globalShortcutUnsupported(draftShortcut.displayTitle) }
-    }
-}
-
-private struct ShortcutSettingsWindowReader: NSViewRepresentable {
-    @Binding var window: NSWindow?
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            window = view.window
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            window = nsView.window
-        }
-    }
-}
-
-private struct ShortcutRecorderView: View {
-    @Binding var shortcut: CaptureKeyboardShortcut
-    let cancelAction: () -> Void
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.accentColor.opacity(0.35), lineWidth: 1)
-
-            HStack {
-                Text(shortcut.displayTitle)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Spacer()
-                Text(L10n.recordingShortcut)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 14)
-        }
-        .background(
-            ShortcutRecorderBridge(
-                shortcut: $shortcut,
-                cancelAction: cancelAction
-            )
-        )
+        errors[action] = saved ? nil : failure ?? L10n.text(en: "This shortcut could not be saved. Try another combination.", zh: "无法保存此快捷键，请尝试其他组合。")
+        session.recordingAction = nil
     }
 }
 
 private struct ShortcutRecorderBridge: NSViewRepresentable {
-    @Binding var shortcut: CaptureKeyboardShortcut
-    let cancelAction: () -> Void
-
+    let onShortcut: (CaptureKeyboardShortcut) -> Void
+    let onCancel: () -> Void
     func makeNSView(context: Context) -> RecorderView {
         let view = RecorderView()
-        view.onShortcut = { shortcut in
-            self.shortcut = shortcut
-        }
-        view.onCancel = cancelAction
+        view.onShortcut = onShortcut; view.onCancel = onCancel
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.textField)
+        view.setAccessibilityLabel(L10n.text(en: "Recording shortcut. Press Escape to cancel.", zh: "正在录制快捷键，按 Esc 取消。"))
         return view
     }
-
-    func updateNSView(_ nsView: RecorderView, context: Context) {
-        nsView.onShortcut = { shortcut in
-            self.shortcut = shortcut
-        }
-        nsView.onCancel = cancelAction
-    }
-
+    func updateNSView(_ view: RecorderView, context: Context) { view.onShortcut = onShortcut; view.onCancel = onCancel }
     final class RecorderView: NSView {
         var onShortcut: ((CaptureKeyboardShortcut) -> Void)?
         var onCancel: (() -> Void)?
-
-        override var acceptsFirstResponder: Bool {
-            true
-        }
-
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-            true
-        }
-
+        override var acceptsFirstResponder: Bool { true }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            DispatchQueue.main.async {
-                self.window?.makeFirstResponder(self)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window, self.superview != nil else { return }
+                window.makeFirstResponder(self)
             }
         }
-
-        override func mouseDown(with event: NSEvent) {
-            window?.makeFirstResponder(self)
-        }
-
+        override func resignFirstResponder() -> Bool { onCancel?(); return true }
         override func keyDown(with event: NSEvent) {
-            if event.keyCode == 53 {
-                onCancel?()
-                return
-            }
-
-            guard let shortcut = CaptureKeyboardShortcut.from(event: event) else {
-                NSSound.beep()
-                return
-            }
-
-            onShortcut?(shortcut)
+            if event.keyCode == 53 { onCancel?(); return }
+            guard let value = CaptureKeyboardShortcut.from(event: event) else { NSSound.beep(); return }
+            onShortcut?(value)
         }
     }
 }

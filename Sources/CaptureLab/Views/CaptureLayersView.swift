@@ -10,10 +10,12 @@ struct CaptureLayersView: View {
     let onSelectionChanged: (Set<CaptureObjectID>) -> Void
     let onCommit: ([CaptureImageLayer], [CaptureAnnotation]) -> Bool
     let addImages: () -> Void
+    var editAnnotation: ((UUID) -> Void)? = nil
     @State private var rotation = "0"
     @State private var width = "0"
     @State private var height = "0"
     @State private var error: String?
+    @State private var showsTransform = false
 
     private var selection: Binding<Set<CaptureObjectID>> {
         Binding(get: { selectedObjects }, set: { onSelectionChanged($0) })
@@ -55,6 +57,9 @@ struct CaptureLayersView: View {
             }
             .listStyle(.sidebar).frame(minHeight: 140, maxHeight: 270)
             .onDeleteCommand(perform: deleteSelection)
+            if selectedObjects.count == 1, case .annotation(let id) = selectedObjects.first, let editAnnotation {
+                Button(L10n.text(en: "Edit Annotation", zh: "编辑标注")) { editAnnotation(id) }
+            }
             HStack {
                 Button { duplicate() } label: { Image(systemName: "plus.square.on.square") }
                     .keyboardShortcut("d", modifiers: .command)
@@ -86,7 +91,8 @@ struct CaptureLayersView: View {
             }.disabled(selectedObjects.count < 2)
             if singleImage != nil {
                 Divider()
-                Text(L10n.text(en: "Image transform", zh: "图片变换")).font(.subheadline.weight(.medium))
+                DisclosureGroup(L10n.text(en: "Adjust Image", zh: "调整图片"), isExpanded: $showsTransform) {
+                VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(L10n.text(en: "Rotation", zh: "旋转"))
                     TextField("°", text: $rotation).textFieldStyle(.roundedBorder).onSubmit(applyTransform)
@@ -105,6 +111,8 @@ struct CaptureLayersView: View {
                 Text(L10n.text(en: "Drag a corner to resize; Shift keeps proportions. Drag the round handle to rotate; Shift snaps to 15°.",
                                zh: "拖动角点缩放，Shift 保持比例；拖动圆形手柄旋转，Shift 吸附到 15°。"))
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }.padding(.top, 10)
+                }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }

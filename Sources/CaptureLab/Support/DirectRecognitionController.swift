@@ -9,6 +9,7 @@ final class DirectRecognitionController: ObservableObject {
     @Published private(set) var results: [String] = []
     @Published private(set) var message = ""
     @Published private(set) var failure: String?
+    @Published private(set) var lastKind: Kind?
     private let pasteboard: NSPasteboard
     private let textOperation: TextOperation
     private let qrOperation: QROperation
@@ -23,6 +24,7 @@ final class DirectRecognitionController: ObservableObject {
         cancel()
         let id = UUID()
         requestID = id
+        lastKind = kind
         isRunning = true
         results = []
         failure = nil

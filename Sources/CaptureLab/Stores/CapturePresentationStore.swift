@@ -68,6 +68,13 @@ final class CaptureExportSettingsStore {
               settings.outputSize(for: CGSize(width: 1, height: 1)) != nil else { return CaptureExportSettings() }
         return settings
     }
+    /// Format and quality are preferences. Dimensions belong to the current
+    /// export, so an old screenshot's width never scales a new document.
+    func loadForNewExport() -> CaptureExportSettings {
+        var value = load()
+        value.width = nil; value.height = nil
+        return value
+    }
     func save(_ settings: CaptureExportSettings) {
         guard let data = try? JSONEncoder().encode(settings) else { return }
         defaults?.set(data, forKey: Self.key)

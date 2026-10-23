@@ -14,6 +14,7 @@ struct CaptureExportView: View {
     @State private var isEncoding = false
     @State private var isSaving = false
     @State private var initialized = false
+    @State private var showsDimensions = false
     private let store = CaptureExportSettingsStore()
 
     private var inputSize: CGSize { image.captureLabPixelSize }
@@ -32,8 +33,6 @@ struct CaptureExportView: View {
                     }.frame(width: 300, height: 280)
                     if let encodedData, encodedSettings == settings {
                         Text(ByteCountFormatter.string(fromByteCount: Int64(encodedData.count), countStyle: .file)).font(.headline).monospacedDigit()
-                        Text(L10n.text(en: "Actual encoded size; this preview is the file that will be saved.", zh: "实际编码大小；保存文件与当前预览使用同一份数据。"))
-                            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     } else if isEncoding {
                         Text(L10n.text(en: "Calculating file size…", zh: "正在计算文件大小…")).font(.caption).foregroundStyle(.secondary)
                     }
@@ -50,8 +49,8 @@ struct CaptureExportView: View {
         }
         .padding(20).textFieldStyle(.roundedBorder)
         .onAppear {
-            var restored = store.load()
-            restored.matchAspectRatio(to: inputSize)
+            guard !initialized else { return }
+            let restored = store.loadForNewExport()
             settings = restored; initialized = true
         }
         .task(id: initialized ? settings : nil) { if initialized { await updatePreview() } }
@@ -78,6 +77,8 @@ struct CaptureExportView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
+            DisclosureGroup(L10n.text(en: "Resize for Export", zh: "调整导出尺寸"), isExpanded: $showsDimensions) {
+            VStack(alignment: .leading, spacing: 12) {
             dimensionField(L10n.text(en: "Width", zh: "宽度"), isWidth: true)
             dimensionField(L10n.text(en: "Height", zh: "高度"), isWidth: false)
             Toggle(L10n.text(en: "Keep aspect ratio", zh: "保持比例"), isOn: $settings.keepAspectRatio)
@@ -85,8 +86,11 @@ struct CaptureExportView: View {
                     if value { settings.matchAspectRatio(to: inputSize) }
                 }
             Button(L10n.text(en: "Use original size", zh: "使用原始尺寸")) { settings.width = nil; settings.height = nil }
-            Text(L10n.text(en: "The last successfully saved configuration is reused for the next export.", zh: "下次导出会复用最近一次成功保存的配置。"))
-                .font(.caption).foregroundStyle(.secondary)
+            }.padding(.top, 10)
+            }
+            if settings.width != nil || settings.height != nil, let size = settings.outputSize(for: inputSize) {
+                Text("\(Int(size.width)) × \(Int(size.height)) px").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
     private func dimensionField(_ title: String, isWidth: Bool) -> some View {
