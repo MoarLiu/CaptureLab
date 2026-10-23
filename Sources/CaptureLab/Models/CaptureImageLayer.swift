@@ -13,12 +13,16 @@ struct CaptureImageLayer: Identifiable, Equatable, Codable {
     var zIndex: Int = 0
 
     var isValid: Bool {
+        hasValidPlacement && pixelSize != nil
+    }
+
+    var hasValidPlacement: Bool {
         let r = normalizedRect
         return !name.isEmpty && name.utf8.count <= 1_024 &&
             [r.minX, r.minY, r.width, r.height].allSatisfy(\.isFinite) &&
             r.width > 0 && r.height > 0 && r.minX >= 0 && r.minY >= 0 &&
             r.maxX <= 1.000001 && r.maxY <= 1.000001 && rotationDegrees.isFinite &&
-            abs(rotationDegrees) <= 360_000 && pixelSize != nil
+            abs(rotationDegrees) <= 360_000
     }
 
     /// Reads dimensions without decoding the bitmap, including when validating

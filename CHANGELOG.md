@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.11.2 - 2026-10-23
+
+- Keep the editor responsive when another instance owns the history lock.
+  Busy history operations can be retried while preserving current edits and
+  undo history; failed recovery saves continue to cancel closing and quitting.
+- Write history images, projects, metadata, and presets privately and atomically.
+  Tighten older regular history files without following resource symlinks;
+  retain support for application-data and history directories relocated by symlink.
+- Reuse decoded image resources and bound ordinary object-drag previews to the
+  display's needs. Restore exact previews on release, and avoid PNG encoding
+  during output-preview refresh. Mosaic scenes apply the exact effect before
+  downsampling, preserving the exported appearance at small preview scales.
+- Refresh only changed history thumbnails, preserve PNG extensions when an
+  uploaded filename contains only Chinese characters, and check the development
+  version fallback against release metadata.
+
+Existing editable project formats remain compatible. Blur and mosaic can leave
+text recognizable; use an opaque fill to cover sensitive information before
+sharing an exported image. Mosaic-heavy interactive previews retain exact
+composition and may be slower than ordinary image-only drags.
+
+Validation and release assets are recorded in the
+[0.11.2 validation record](docs/0.11.2-release-validation.md).
+Packages retain the existing self-signed identity without notarization or
+hardened runtime; Gatekeeper may require manual approval.
+
+Verified release artifacts; publication approved:
+
+- `CaptureLab-0.11.2-macos-arm64.dmg` — SHA-256:
+  `8e00298ed43d44a8b960e19db47c9b380dac9d637ffae4ece92e20bea491680e`
+- `CaptureLab-0.11.2-macos-x86_64.dmg` — SHA-256:
+  `abbae19250fbdc16cdc02c0a5aa52f100a0e6a0b7ba33565bc6125eb6e4e6e08`
+
+Each package includes matching `.dmg.sha256` and `.dmg.sig` files.
+
 ## 0.11.1 - 2026-10-11
 
 - Preserve every recovered capture and editable project when the history index

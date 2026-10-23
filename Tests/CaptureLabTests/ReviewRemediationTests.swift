@@ -4,6 +4,151 @@ import XCTest
 
 @MainActor
 final class ReviewRemediationTests: XCTestCase {
+    func testLinkedDataRootPreservesHistoryPresetsAndNormalTermination() throws {
+        let fixture = try ReviewFixture()
+        defer { fixture.remove() }
+        let environment = ["HOME": fixture.root.path]
+        let support = CaptureLabDataRoot.supportDirectory(environment: environment)
+        let relocated = fixture.root.appendingPathComponent("relocated-data")
+        try FileManager.default.moveItem(at: support, to: relocated)
+        try FileManager.default.createSymbolicLink(at: support, withDestinationURL: relocated)
+        let history = CaptureHistoryStore(environment: environment)
+        XCTAssertNil(history.loadError)
+        let item = try history.record(data: fixture.imageData(), pixelSize: CGSize(width: 80, height: 60))
+        let model = CaptureLabViewModel(r2SettingsStore: fixture.settings, historyStore: history,
+            failurePresentationOperation: { _, message in XCTFail(message) }, pasteboard: fixture.pasteboard)
+        model.openHistoryItem(item)
+        model.addAnnotation(.init(kind: .rectangle, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)))
+        let annotations = model.annotations
+        XCTAssertTrue(model.prepareForTermination())
+        let reopened = CaptureHistoryStore(environment: environment)
+        let saved = try reopened.editableSnapshot(for: item)
+        XCTAssertEqual(try CaptureProjectStore.decode(XCTUnwrap(saved.project)).annotations, annotations)
+        XCTAssertEqual(reopened.historyDirectory, relocated.appendingPathComponent("History").resolvingSymlinksInPath())
+        let presets = CapturePresentationStore(environment: environment)
+        let preset = try presets.save(name: "Linked root", presentation: .init())
+        XCTAssertEqual(CapturePresentationStore(environment: environment).presets, [preset])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: relocated.appendingPathComponent("presentation-presets.json").path))
+    }
+
+    func testSmallScaleMosaicPreviewsMatchExactEffectBeforeDownsampling() throws {
+        let fixture = try ReviewFixture()
+        defer { fixture.remove() }
+        for size in [CGSize(width: 600, height: 360), CGSize(width: 120, height: 900)] {
+            let model = fixture.model()
+            XCTAssertTrue(model.openSnapshot(CaptureImageSnapshot(data: try fixture.imageData(width: Int(size.width), height: Int(size.height)))))
+            XCTAssertTrue(model.addImageResources([(try fixture.imageData(), "Synthetic layer")]))
+            model.addAnnotation(.init(kind: .mosaic, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.7, height: 0.7)))
+            model.addAnnotation(.init(kind: .blur, normalizedRect: CGRect(x: 0.3, y: 0.2, width: 0.4, height: 0.4)))
+            model.adjustImage(.rotateClockwise)
+            var presentation = CapturePresentation()
+            presentation.padding = 12
+            model.applyPresentation(presentation)
+            let document = try XCTUnwrap(model.document)
+            let exact = try XCTUnwrap(model.renderedPreviewImage())
+            let exactContent = try XCTUnwrap(model.renderedContentImage())
+            let renderer = CaptureCompositionPreviewRenderer()
+            let maximum = max(size.width, size.height, exact.captureLabPixelSize.width, exact.captureLabPixelSize.height)
+            for ratio in [CGFloat(1), 0.5, 0.25, 0.24, 0.1] {
+                let limit = max(1, Int(maximum * ratio))
+                let output = try XCTUnwrap(model.renderedPreviewImage(maximumDimension: limit))
+                XCTAssertEqual(try Self.pixels(output), try Self.pixels(downsample(exact, to: output.captureLabPixelSize)), "Output scale \(ratio)")
+                XCTAssertEqual(output.size, exact.size)
+                let objects = try XCTUnwrap(renderer.render(document: document, layers: document.imageLayers,
+                    annotations: model.annotations, maximumDimension: limit))
+                XCTAssertEqual(try Self.pixels(objects), try Self.pixels(downsample(exactContent, to: objects.captureLabPixelSize)), "Object scale \(ratio)")
+                XCTAssertLessThanOrEqual(output.captureLabPixelSize.width * output.captureLabPixelSize.height,
+                                         CaptureCompositionPreviewRenderer.maximumPixels)
+            }
+        }
+    }
+
+    private func downsample(_ image: NSImage, to size: CGSize) throws -> NSImage {
+        let source = try XCTUnwrap(image.captureLabCGImage())
+        let context = try XCTUnwrap(CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.interpolationQuality = .high
+        context.draw(source, in: CGRect(origin: .zero, size: size))
+        return NSImage(cgImage: try XCTUnwrap(context.makeImage()), size: image.size)
+    }
+
+    func testDisplayPreviewDoesNotEncodeOrCommitTextAndExactOutputMatchesIt() throws {
+        let fixture = try ReviewFixture()
+        defer { fixture.remove() }
+        var encodings = 0
+        let model = fixture.model(pngRenderer: { image, annotations in
+            encodings += 1
+            XCTAssertTrue(annotations.isEmpty)
+            return image.captureLabPNGData()
+        })
+        XCTAssertTrue(model.openSnapshot(CaptureImageSnapshot(data: try fixture.imageData())))
+        model.addAnnotation(.init(kind: .mosaic, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)))
+        model.adjustImage(.rotateClockwise)
+        var presentation = CapturePresentation()
+        presentation.padding = 8
+        model.applyPresentation(presentation)
+        let owner = NSObject()
+        var textCommits = 0
+        CaptureEditingSession.shared.registerPendingTextCommitter(owner: owner) { textCommits += 1 }
+        defer { CaptureEditingSession.shared.unregisterPendingTextCommitter(owner: owner) }
+        let preview = try XCTUnwrap(model.renderedPreviewImage())
+        XCTAssertNotNil(model.renderedPreviewImage(maximumDimension: 1024))
+        XCTAssertEqual(encodings, 0)
+        XCTAssertEqual(textCommits, 0)
+        let output = try XCTUnwrap(model.renderedSnapshot()?.image)
+        XCTAssertEqual(encodings, 1)
+        XCTAssertEqual(try Self.pixels(preview), try Self.pixels(output))
+    }
+
+    func testHistoryReadsDoNotRepublishIdenticalItemsOrInvalidateOtherThumbnails() throws {
+        let fixture = try ReviewFixture()
+        defer { fixture.remove() }
+        let item = try fixture.history.record(data: fixture.imageData(), pixelSize: CGSize(width: 80, height: 60))
+        let model = fixture.model()
+        var publications = 0
+        let subscription = model.$historyItems.sink { _ in publications += 1 }
+        defer { subscription.cancel() }
+        let identity = CaptureHistoryThumbnailIdentity(id: item.id, url: fixture.history.url(for: item), modifiedAt: item.modifiedAt)
+        model.copyHistoryItem(item)
+        XCTAssertNotNil(model.snapshot(for: item))
+        model.refreshHistory()
+        XCTAssertEqual(publications, 1)
+        _ = try fixture.history.record(data: fixture.imageData(), pixelSize: item.pixelSize)
+        model.refreshHistory()
+        XCTAssertEqual(publications, 2)
+        let unchanged = try XCTUnwrap(model.historyItems.first { $0.id == item.id })
+        XCTAssertEqual(identity, CaptureHistoryThumbnailIdentity(id: unchanged.id,
+            url: fixture.history.url(for: unchanged), modifiedAt: unchanged.modifiedAt))
+    }
+
+    func testBusyQuitAndReplacementPreserveEditsAndDoNotReplayUpdate() throws {
+        let fixture = try ReviewFixture()
+        defer { fixture.remove() }
+        let model = fixture.model()
+        XCTAssertTrue(model.openSnapshot(CaptureImageSnapshot(data: try fixture.imageData())))
+        model.addAnnotation(.init(kind: .rectangle, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5)))
+        let id = model.document?.id
+        let annotations = model.annotations
+        let holder = try HistoryLockHolder(directory: fixture.history.historyDirectory)
+        defer { holder.release() }
+        var installations = 0
+        model.requestUpdateInstallation({ installations += 1 }, terminate: {
+            XCTAssertFalse(model.prepareForTermination())
+        })
+        XCTAssertFalse(model.openSnapshot(CaptureImageSnapshot(data: try fixture.imageData())))
+        XCTAssertEqual(model.document?.id, id)
+        XCTAssertEqual(model.annotations, annotations)
+        XCTAssertTrue(model.canUndoAnnotation)
+        XCTAssertEqual(installations, 0)
+        XCTAssertTrue(holder.process.isRunning)
+        holder.release()
+        XCTAssertTrue(model.prepareForTermination())
+        XCTAssertEqual(installations, 0)
+        XCTAssertFalse(fixture.history.items.isEmpty)
+        model.undoAnnotation()
+        XCTAssertTrue(model.annotations.isEmpty)
+    }
+
     func testOCRReceivesExportPixelsIncludingRedactionsLayersCropRotationAndPresentation() async throws {
         let fixture = try ReviewFixture()
         defer { fixture.remove() }
@@ -232,11 +377,11 @@ private struct ReviewFixture {
             pasteboard: pasteboard, captureOperation: capture, textRecognitionOperation: textRecognition,
             imageRenderingOperation: imageRenderer, pngDataRenderingOperation: pngRenderer, updateCheckService: updateService)
     }
-    func imageData() throws -> Data {
-        let context = try XCTUnwrap(CGContext(data: nil, width: 80, height: 60, bitsPerComponent: 8,
-            bytesPerRow: 80 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        for y in 0..<60 {
-            for x in 0..<80 {
+    func imageData(width: Int = 80, height: Int = 60) throws -> Data {
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        for y in 0..<height {
+            for x in 0..<width {
                 let value = CGFloat((x * 31 + y * 17) % 255) / 255
                 context.setFillColor(CGColor(red: value, green: 1 - value, blue: value, alpha: 1))
                 context.fill(CGRect(x: x, y: y, width: 1, height: 1))

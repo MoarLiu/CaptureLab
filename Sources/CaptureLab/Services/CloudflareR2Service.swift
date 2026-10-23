@@ -784,9 +784,18 @@ final class CloudflareR2UploadService {
 
     static func safeFileName(_ raw: String) -> String {
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.")
-        let scalars = raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
-        let value = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-."))
-        return value.isEmpty ? "capture.png" : value
+        // Sanitize the stem separately so a non-ASCII name cannot consume the
+        // dot before its extension ("截图.png" used to become "png").
+        let name = raw as NSString
+        let ext = name.pathExtension
+        let stem = ext.isEmpty ? raw : name.deletingPathExtension
+        func sanitized(_ value: String) -> String {
+            String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        }
+        let safeStem = sanitized(stem)
+        let safeExtension = sanitized(ext)
+        return (safeStem.isEmpty ? "capture" : safeStem) + "." + (safeExtension.isEmpty ? "png" : safeExtension)
     }
 
     private func performUploadWithRetry(_ request: URLRequest, data: Data) async throws -> Data {

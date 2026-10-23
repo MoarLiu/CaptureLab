@@ -3,6 +3,14 @@ import XCTest
 @testable import CaptureLab
 
 final class CloudflareR2UploadServiceTests: XCTestCase {
+    func testSafeFileNamePreservesExtensionWhenStemHasNoASCIICharacters() {
+        XCTAssertEqual(CloudflareR2UploadService.safeFileName("截图.png"), "capture.png")
+        XCTAssertEqual(CloudflareR2UploadService.safeFileName("屏幕截图 2026.png"), "2026.png")
+        XCTAssertEqual(CloudflareR2UploadService.safeFileName("😀.png"), "capture.png")
+        XCTAssertEqual(CloudflareR2UploadService.safeFileName("image.png"), "image.png")
+        XCTAssertEqual(CloudflareR2UploadService.safeFileName("..."), "capture.png")
+    }
+
     func testObjectKeyUsesPrefixDateUUIDAndSafeFileName() throws {
         let service = CloudflareR2UploadService()
         let key = service.objectKey(

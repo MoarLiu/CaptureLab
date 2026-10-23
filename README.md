@@ -94,6 +94,10 @@ Annotations retain their own drawing order. The background surrounds the finishe
 crop and does not change object coordinates. Copy, pin, drag-out, history, and R2
 use the same composition; R2 continues to upload PNG.
 
+The [0.11.2 release validation record](docs/0.11.2-release-validation.md) covers
+history locking and private writes, linked data directories, thumbnail refresh,
+and bounded previews. Mosaic previews apply the exact effect before scaling;
+these scenes may take longer than ordinary image-only drags.
 The [0.11.1 release validation record](docs/0.11.1-release-validation.md) covers
 history recovery, project resource limits, and counter overflow fixes.
 The [0.11.0 plan and validation record](docs/0.11.0-validation.md) covers daily
@@ -120,6 +124,17 @@ Build and run:
 ```bash
 ./script/build_and_run.sh
 ```
+
+Run the build and full test suite with strict concurrency and warnings as errors:
+
+```bash
+./script/verify.sh
+```
+
+The verification script also accepts shared SwiftPM options such as
+`--scratch-path /tmp/capturelab-verification` and test-only filtering through
+`--test-filter CaptureHistoryStoreTests`. The process-lock fixture supports tests;
+an unfiltered `swift build` also builds it, but packaged applications exclude it.
 
 Package a release DMG:
 

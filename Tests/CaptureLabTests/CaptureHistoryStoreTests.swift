@@ -4,6 +4,19 @@ import XCTest
 
 @MainActor
 final class CaptureHistoryStoreTests: XCTestCase {
+    func testReentrantStoreCannotReleaseOuterProcessLock() throws {
+        let fixture = try HistoryFixture()
+        let nested = CaptureHistoryStore(environment: fixture.environment)
+        let outer = CaptureHistoryStore(environment: fixture.environment, imageWriter: { data, url in
+            XCTAssertThrowsError(try nested.refresh()) { self.assertBusy($0) }
+            XCTAssertFalse(nested.isBusy, "Reentrancy is not a cross-process busy state")
+            XCTAssertFalse(try HistoryLockHolder.canAcquire(directory: nested.historyDirectory))
+            try CapturePrivateFile.writeAtomically(data, to: url)
+        })
+        _ = try outer.record(data: Data([1]), pixelSize: CGSize(width: 1, height: 1))
+        XCTAssertTrue(try HistoryLockHolder.canAcquire(directory: nested.historyDirectory))
+    }
+
     func testRecordPersistsAndReloadsHistoryItem() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
@@ -22,27 +35,24 @@ final class CaptureHistoryStoreTests: XCTestCase {
         XCTAssertEqual(try reloaded.data(for: item), Data([0x89, 0x50, 0x4E, 0x47]))
     }
 
-    func testUpdateImagePreservesIdentityAndConcurrentHistoryRecords() throws {
+    func testEditableSavePreservesIdentityAndConcurrentHistoryRecords() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
-        let item = try store.record(data: Data([1, 2]), pixelSize: CGSize(width: 10, height: 10))
-        let otherStore = CaptureHistoryStore(environment: fixture.environment)
-        let newer = try otherStore.record(data: Data([3, 4]), pixelSize: CGSize(width: 20, height: 20))
-        let metadata = try Data(contentsOf: store.metadataURL)
-
-        XCTAssertEqual(try store.updateImage(data: Data([5, 6]), for: item), item)
-
-        XCTAssertEqual(store.items, [newer, item])
-        XCTAssertEqual(try Data(contentsOf: store.metadataURL), metadata)
-        XCTAssertEqual(try store.data(for: item), Data([5, 6]))
-        XCTAssertEqual(try store.data(for: newer), Data([3, 4]))
-        let reloaded = CaptureHistoryStore(environment: fixture.environment)
-        XCTAssertEqual(reloaded.items, [newer, item])
-        XCTAssertEqual(try reloaded.data(for: item), Data([5, 6]))
+        let original = try store.record(data: Data([1, 2]), pixelSize: CGSize(width: 10, height: 10))
+        let other = CaptureHistoryStore(environment: fixture.environment)
+        let newer = try other.record(data: Data([3, 4]), pixelSize: CGSize(width: 20, height: 20))
+        let updated = try store.saveEditable(preview: Data([5, 6]), project: Data([7]), for: original,
+            pixelSize: original.pixelSize, createdAt: original.createdAt)
+        XCTAssertEqual(updated.id, original.id)
+        XCTAssertNotEqual(updated.fileName, original.fileName)
+        XCTAssertEqual(store.items, [updated, newer])
+        XCTAssertEqual(try store.imageSnapshot(for: original).data, Data([5, 6]))
+        XCTAssertEqual(try store.editableSnapshot(for: original).project, Data([7]))
+        XCTAssertEqual(CaptureHistoryStore(environment: fixture.environment).items, [updated, newer])
         XCTAssertEqual(try pngURLs(in: store.historyDirectory).count, 2)
     }
 
-    func testUpdateImageFailurePreservesPreviousImageAndMetadata() throws {
+    func testEditableWriteFailurePreservesPreviousImageAndMetadata() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
         let item = try store.record(data: Data([1, 2]), pixelSize: CGSize(width: 10, height: 10))
@@ -52,14 +62,14 @@ final class CaptureHistoryStoreTests: XCTestCase {
             imageWriter: { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
         )
 
-        XCTAssertThrowsError(try failingStore.updateImage(data: Data([3, 4]), for: item))
+        XCTAssertThrowsError(try failingStore.saveEditable(preview: Data([3, 4]), project: Data([7]), for: item, pixelSize: item.pixelSize, createdAt: item.createdAt))
 
         XCTAssertEqual(failingStore.items, [item])
         XCTAssertEqual(try store.data(for: item), Data([1, 2]))
         XCTAssertEqual(try Data(contentsOf: store.metadataURL), metadata)
     }
 
-    func testUpdateImageWriterFailureAfterTemporaryWritePreservesOriginal() throws {
+    func testEditableWriterFailureAfterTemporaryWritePreservesOriginal() throws {
         enum FixtureError: Error { case reportedAfterWrite }
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
@@ -72,7 +82,7 @@ final class CaptureHistoryStoreTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try failingStore.updateImage(data: Data([3, 4]), for: original))
+        XCTAssertThrowsError(try failingStore.saveEditable(preview: Data([3, 4]), project: Data([7]), for: original, pixelSize: original.pixelSize, createdAt: original.createdAt))
 
         XCTAssertEqual(try failingStore.data(for: original), Data([1, 2]))
         XCTAssertEqual(failingStore.items, [original])
@@ -86,20 +96,17 @@ final class CaptureHistoryStoreTests: XCTestCase {
         let otherStore = CaptureHistoryStore(environment: fixture.environment)
         let newer = try otherStore.record(data: Data([3, 4]), pixelSize: CGSize(width: 20, height: 20))
 
-        let cropped = try XCTUnwrap(store.updateImage(
-            data: Data([5, 6]),
-            for: original,
-            pixelSize: CGSize(width: 40, height: 30)
-        ))
+        let cropped = try store.saveEditable(preview: Data([5, 6]), project: Data([7]), for: original,
+            pixelSize: CGSize(width: 40, height: 30), createdAt: original.createdAt)
 
         XCTAssertEqual(cropped.id, original.id)
         XCTAssertEqual(cropped.createdAt, original.createdAt)
         XCTAssertEqual(cropped.pixelSize, CGSize(width: 40, height: 30))
         XCTAssertNotEqual(cropped.fileName, original.fileName)
-        XCTAssertEqual(store.items, [newer, cropped])
+        XCTAssertEqual(store.items, [cropped, newer])
         XCTAssertEqual(try store.data(for: cropped), Data([5, 6]))
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.url(for: original).path))
-        XCTAssertEqual(CaptureHistoryStore(environment: fixture.environment).items, [newer, cropped])
+        XCTAssertEqual(CaptureHistoryStore(environment: fixture.environment).items, [cropped, newer])
         XCTAssertEqual(try pngURLs(in: store.historyDirectory).count, 2)
     }
 
@@ -114,11 +121,8 @@ final class CaptureHistoryStoreTests: XCTestCase {
             metadataWriter: { _, _ in throw FixtureError.metadataWriteFailed }
         )
 
-        XCTAssertThrowsError(try failingStore.updateImage(
-            data: Data([3, 4]),
-            for: original,
-            pixelSize: CGSize(width: 40, height: 30)
-        ))
+        XCTAssertThrowsError(try failingStore.saveEditable(preview: Data([3, 4]), project: Data([7]), for: original,
+            pixelSize: CGSize(width: 40, height: 30), createdAt: original.createdAt))
 
         XCTAssertEqual(failingStore.items, [original])
         XCTAssertEqual(try failingStore.data(for: original), Data([1, 2]))
@@ -131,8 +135,8 @@ final class CaptureHistoryStoreTests: XCTestCase {
         let reader = CaptureHistoryStore(environment: fixture.environment)
         let original = try reader.record(data: Data([1]), pixelSize: CGSize(width: 100, height: 80))
         let writer = CaptureHistoryStore(environment: fixture.environment)
-        let cropped = try XCTUnwrap(writer.updateImage(data: Data([2, 3]), for: original,
-            pixelSize: CGSize(width: 40, height: 30)))
+        let cropped = try writer.saveEditable(preview: Data([2, 3]), project: Data([7]), for: original,
+            pixelSize: CGSize(width: 40, height: 30), createdAt: original.createdAt)
         XCTAssertFalse(FileManager.default.fileExists(atPath: reader.url(for: original).path))
 
         let snapshot = try reader.imageSnapshot(for: original)
@@ -161,52 +165,24 @@ final class CaptureHistoryStoreTests: XCTestCase {
         XCTAssertTrue(reader.items.isEmpty)
     }
 
-    func testImageSnapshotWaitsForCrossProcessCropCommit() throws {
+    func testBusyReadsPreserveSnapshotAndRetryLatestCommittedRevision() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
         let original = try store.record(data: Data([1]), pixelSize: CGSize(width: 100, height: 80))
-        var cropped = original
-        cropped.fileName = "cropped-\(original.id.uuidString).png"
-        cropped.pixelWidth = 40
-        cropped.pixelHeight = 30
-        let stagedMetadata = fixture.home.appendingPathComponent("next-history.json")
-        try writeMetadata([cropped], to: stagedMetadata)
-        let nextImage = store.url(for: cropped)
-        let stagedImage = fixture.home.appendingPathComponent("next.png")
-        try Data([2, 3]).write(to: stagedImage)
-        let ready = fixture.home.appendingPathComponent("crop-writer-ready")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
-        process.arguments = [
-            "-k", store.historyDirectory.appendingPathComponent(".history.lock").path,
-            "/bin/sh", "-c",
-            """
-            touch "$1" || exit 1
-            sleep 0.5
-            mv "$2" "$3" || exit 2
-            mv "$4" "$5" || exit 3
-            rm "$6" || exit 4
-            """,
-            "crop-writer", ready.path, stagedImage.path, nextImage.path,
-            stagedMetadata.path, store.metadataURL.path, store.url(for: original).path
-        ]
-        try process.run()
-        defer {
-            if process.isRunning { process.terminate() }
-            process.waitUntilExit()
-        }
-        let deadline = Date().addingTimeInterval(2)
-        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: ready.path))
-
+        let holder = try HistoryLockHolder(directory: store.historyDirectory)
+        defer { holder.release() }
+        XCTAssertThrowsError(try store.imageSnapshot(for: original)) { self.assertBusy($0) }
+        XCTAssertThrowsError(try store.editableSnapshot(for: original)) { self.assertBusy($0) }
+        XCTAssertEqual(store.items, [original])
+        XCTAssertTrue(holder.process.isRunning, "Reads must return while the writer still owns the lock")
+        holder.release()
+        let writer = CaptureHistoryStore(environment: fixture.environment)
+        let updated = try writer.saveEditable(preview: Data([2, 3]), project: Data([7]), for: original,
+            pixelSize: CGSize(width: 40, height: 30), createdAt: original.createdAt)
         let snapshot = try store.imageSnapshot(for: original)
-        process.waitUntilExit()
-
-        XCTAssertEqual(process.terminationStatus, 0)
-        XCTAssertEqual(snapshot.item, cropped)
-        XCTAssertEqual(snapshot.data, Data([2, 3]), "The read must wait for the committed image revision.")
+        XCTAssertEqual(snapshot.item, updated)
+        XCTAssertEqual(snapshot.data, Data([2, 3]))
+        XCTAssertFalse(store.isBusy)
     }
 
     func testCropSynchronizesCommitWhenMetadataWriterReportsFailureAfterCommit() throws {
@@ -222,11 +198,8 @@ final class CaptureHistoryStoreTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try failingStore.updateImage(
-            data: Data([3, 4]),
-            for: original,
-            pixelSize: CGSize(width: 40, height: 30)
-        ))
+        XCTAssertThrowsError(try failingStore.saveEditable(preview: Data([3, 4]), project: Data([7]), for: original,
+            pixelSize: CGSize(width: 40, height: 30), createdAt: original.createdAt))
 
         let committed = try XCTUnwrap(failingStore.items.first)
         XCTAssertEqual(committed.id, original.id)
@@ -249,11 +222,8 @@ final class CaptureHistoryStoreTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try failingStore.updateImage(
-            data: Data([3, 4]),
-            for: original,
-            pixelSize: CGSize(width: 40, height: 30)
-        ))
+        XCTAssertThrowsError(try failingStore.saveEditable(preview: Data([3, 4]), project: Data([7]), for: original,
+            pixelSize: CGSize(width: 40, height: 30), createdAt: original.createdAt))
 
         XCTAssertEqual(failingStore.items, [original])
         XCTAssertEqual(try failingStore.data(for: original), Data([1, 2]))
@@ -636,48 +606,22 @@ final class CaptureHistoryStoreTests: XCTestCase {
         XCTAssertEqual(failingStore.items, [original])
     }
 
-    func testRefreshWaitsForActiveCrossProcessImageUpdateBeforeCleanup() throws {
+    func testBusyRefreshDoesNotReclaimLivePendingResources() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
-        let original = try store.record(data: makePNGData(color: .red), pixelSize: CGSize(width: 4, height: 3))
-        let updatedData = try makePNGData(color: .green)
-        let source = fixture.home.appendingPathComponent("updated.png")
-        try updatedData.write(to: source, options: .atomic)
-        let pending = store.historyDirectory.appendingPathComponent(".image-update-\(UUID().uuidString).pending")
-        let ready = fixture.home.appendingPathComponent("image-writer-ready")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
-        process.arguments = [
-            "-k",
-            store.historyDirectory.appendingPathComponent(".history.lock").path,
-            "/bin/sh", "-c",
-            """
-            cp "$1" "$2" || exit 1
-            touch "$3" || exit 2
-            sleep 0.5
-            test -f "$2" || exit 3
-            mv "$2" "$4" || exit 4
-            """,
-            "image-writer", source.path, pending.path, ready.path, store.url(for: original).path
-        ]
-        try process.run()
-        defer {
-            if process.isRunning { process.terminate() }
-            process.waitUntilExit()
-        }
-        let deadline = Date().addingTimeInterval(2)
-        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: ready.path))
-
-        try store.refresh()
-        process.waitUntilExit()
-
-        XCTAssertEqual(process.terminationStatus, 0, "Cleanup must not remove a live writer's pending PNG")
+        let original = try store.record(data: Data([1]), pixelSize: CGSize(width: 4, height: 3))
+        let pending = try writeInterruptedImageUpdate(data: Data([2]), in: store.historyDirectory)
+        let holder = try HistoryLockHolder(directory: store.historyDirectory)
+        defer { holder.release() }
+        XCTAssertThrowsError(try store.refresh()) { self.assertBusy($0) }
+        XCTAssertNil(store.loadError)
         XCTAssertEqual(store.items, [original])
-        XCTAssertEqual(try store.data(for: original), updatedData)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pending.path))
+        XCTAssertTrue(holder.process.isRunning)
+        holder.release()
+        try store.refresh()
         XCTAssertFalse(FileManager.default.fileExists(atPath: pending.path))
+        XCTAssertEqual(store.items, [original])
     }
 
     func testValidMetadataKeepsReferencedRevisionOverNewerOrphanWithSameID() throws {
@@ -703,7 +647,7 @@ final class CaptureHistoryStoreTests: XCTestCase {
     func testMissingMetadataRecoveryProtectsPNGsBeyondDefaultRetentionLimit() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
-        let totalCount = CaptureHistoryStore.maxItemCount + 3
+        let totalCount = CaptureHistoryRetention.default.maximumCount + 3
         for index in 0..<totalCount {
             let url = store.historyDirectory.appendingPathComponent(
                 "capture-recovery-\(index)-\(UUID().uuidString).png"
@@ -819,7 +763,7 @@ final class CaptureHistoryStoreTests: XCTestCase {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
 
-        for index in 0..<(CaptureHistoryStore.maxItemCount - 1) {
+        for index in 0..<(CaptureHistoryRetention.default.maximumCount - 1) {
             _ = try store.record(
                 data: Data([UInt8(index)]),
                 pixelSize: CGSize(width: 10, height: 10),
@@ -856,7 +800,7 @@ final class CaptureHistoryStoreTests: XCTestCase {
         let store = CaptureHistoryStore(environment: fixture.environment)
         let sharedURL = store.historyDirectory.appendingPathComponent("shared.png")
         try Data([1, 2, 3]).write(to: sharedURL, options: .atomic)
-        let duplicateItems = (0..<CaptureHistoryStore.maxItemCount).map { index in
+        let duplicateItems = (0..<CaptureHistoryRetention.default.maximumCount).map { index in
             CaptureHistoryItem(
                 id: UUID(),
                 createdAt: Date(timeIntervalSince1970: TimeInterval(index)),
@@ -881,50 +825,46 @@ final class CaptureHistoryStoreTests: XCTestCase {
         })
     }
 
-    func testRecordWaitsForCrossProcessFcntlLock() throws {
+    func testAllMutationsReturnBusyWithoutChangingResourcesAndRetryAfterRelease() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
-        let lockURL = store.historyDirectory.appendingPathComponent(".history.lock")
-        let readyURL = fixture.home.appendingPathComponent("lock-holder-ready")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/lockf")
-        process.arguments = [
-            lockURL.path,
-            "/bin/sh",
-            "-c",
-            "touch \"$1\"; sleep 0.5",
-            "lock-holder",
-            readyURL.path
-        ]
-        try process.run()
-        defer {
-            if process.isRunning {
-                process.terminate()
-            }
-            process.waitUntilExit()
-        }
+        let item = try store.record(data: Data([1]), pixelSize: CGSize(width: 1, height: 1))
+        let retention = try store.previewRetention(.default)
+        let metadata = try Data(contentsOf: store.metadataURL)
+        let holder = try HistoryLockHolder(directory: store.historyDirectory)
+        defer { holder.release() }
+        let busyStartup = CaptureHistoryStore(environment: fixture.environment)
+        XCTAssertTrue(busyStartup.isBusy)
+        XCTAssertTrue(busyStartup.items.isEmpty, "Busy initialization must not recover live resources")
+        XCTAssertNil(busyStartup.loadError)
+        XCTAssertThrowsError(try store.record(data: Data([2]), pixelSize: item.pixelSize)) { self.assertBusy($0) }
+        XCTAssertThrowsError(try store.saveEditable(preview: Data([2]), project: Data([3]), for: item,
+            pixelSize: item.pixelSize, createdAt: item.createdAt)) { self.assertBusy($0) }
+        XCTAssertThrowsError(try store.remove(item)) { self.assertBusy($0) }
+        XCTAssertThrowsError(try store.previewRetention(.default)) { self.assertBusy($0) }
+        XCTAssertThrowsError(try store.applyRetention(retention)) { self.assertBusy($0) }
+        XCTAssertEqual(store.items, [item])
+        XCTAssertEqual(try Data(contentsOf: store.metadataURL), metadata)
+        XCTAssertEqual(try pngURLs(in: store.historyDirectory).count, 1)
+        XCTAssertTrue(holder.process.isRunning)
+        holder.release()
+        try busyStartup.refresh()
+        XCTAssertEqual(busyStartup.items, [item])
+        _ = try store.record(data: Data([2]), pixelSize: item.pixelSize)
+        XCTAssertEqual(store.items.count, 2)
+    }
 
-        let readyDeadline = Date().addingTimeInterval(2)
-        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readyDeadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    private func assertBusy(_ error: Error, file: StaticString = #filePath, line: UInt = #line) {
+        guard case CaptureHistoryError.busy = error else {
+            return XCTFail("Expected history busy, got \(error)", file: file, line: line)
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: readyURL.path))
-
-        let startedAt = Date()
-        _ = try store.record(
-            data: Data([1]),
-            pixelSize: CGSize(width: 1, height: 1),
-            createdAt: Date(timeIntervalSince1970: 0)
-        )
-        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(startedAt), 0.2)
-        XCTAssertEqual(process.terminationStatus, 0)
     }
 
     func testRecordTrimsHistoryToMaximumItemCount() throws {
         let fixture = try HistoryFixture()
         let store = CaptureHistoryStore(environment: fixture.environment)
 
-        for index in 0..<(CaptureHistoryStore.maxItemCount + 2) {
+        for index in 0..<(CaptureHistoryRetention.default.maximumCount + 2) {
             _ = try store.record(
                 data: Data([UInt8(index % 255)]),
                 pixelSize: CGSize(width: 10, height: 10),
@@ -932,14 +872,14 @@ final class CaptureHistoryStoreTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(store.items.count, CaptureHistoryStore.maxItemCount)
+        XCTAssertEqual(store.items.count, CaptureHistoryRetention.default.maximumCount)
         XCTAssertEqual(store.items.first?.createdAt, Date(timeIntervalSince1970: 31))
         XCTAssertEqual(store.items.last?.createdAt, Date(timeIntervalSince1970: 2))
         let pngs = try FileManager.default.contentsOfDirectory(
             at: store.historyDirectory,
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "png" }
-        XCTAssertEqual(pngs.count, CaptureHistoryStore.maxItemCount)
+        XCTAssertEqual(pngs.count, CaptureHistoryRetention.default.maximumCount)
         XCTAssertTrue(store.items.allSatisfy {
             FileManager.default.fileExists(atPath: store.url(for: $0).path)
         })

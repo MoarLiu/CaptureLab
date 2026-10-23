@@ -190,7 +190,7 @@ struct CapturePresentation: Codable, Hashable, Sendable {
         let scale = image.size.width / max(CGFloat(input.width), 1)
         return NSImage(cgImage: output, size: CGSize(width: CGFloat(output.width) * scale, height: CGFloat(output.height) * scale))
     }
-    func render(_ input: CGImage) -> CGImage? {
+    func render(_ input: CGImage, backgroundImage: CGImage? = nil) -> CGImage? {
         let inputSize = CGSize(width: input.width, height: input.height)
         guard let size = outputSize(for: inputSize), let topRect = contentRect(for: inputSize) else { return nil }
         if isIdentity { return input }
@@ -209,11 +209,11 @@ struct CapturePresentation: Codable, Hashable, Sendable {
             context.drawLinearGradient(gradient, start: CGPoint(x: bounds.midX - delta.x, y: bounds.midY - delta.y), end: CGPoint(x: bounds.midX + delta.x, y: bounds.midY + delta.y), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
         case .image:
             guard let data = customBackgroundData, let source = Self.validImageSource(data),
-                  let backgroundImage = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
-            let scale = max(size.width / CGFloat(backgroundImage.width), size.height / CGFloat(backgroundImage.height))
-            let drawSize = CGSize(width: CGFloat(backgroundImage.width) * scale, height: CGFloat(backgroundImage.height) * scale)
+                  let decoded = backgroundImage ?? CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
+            let scale = max(size.width / CGFloat(decoded.width), size.height / CGFloat(decoded.height))
+            let drawSize = CGSize(width: CGFloat(decoded.width) * scale, height: CGFloat(decoded.height) * scale)
             context.interpolationQuality = .high
-            context.draw(backgroundImage, in: CGRect(x: (size.width - drawSize.width) / 2, y: (size.height - drawSize.height) / 2, width: drawSize.width, height: drawSize.height))
+            context.draw(decoded, in: CGRect(x: (size.width - drawSize.width) / 2, y: (size.height - drawSize.height) / 2, width: drawSize.width, height: drawSize.height))
         }
         let rect = CGRect(x: topRect.minX, y: size.height - topRect.maxY, width: topRect.width, height: topRect.height)
         let radius = min(cornerRadius, min(rect.width, rect.height) / 2)

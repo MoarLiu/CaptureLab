@@ -99,17 +99,7 @@ enum CaptureProjectStore {
     }
 
     static func write(_ data: Data, to url: URL) throws {
-        let temporary = url.deletingLastPathComponent().appendingPathComponent(".capturelab-\(UUID().uuidString).pending")
-        let descriptor = temporary.path.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600)) }
-        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        defer { try? handle.close(); try? FileManager.default.removeItem(at: temporary) }
-        try handle.write(contentsOf: data)
-        try handle.synchronize()
-        try handle.close()
-        guard temporary.path.withCString({ source in url.path.withCString { Darwin.rename(source, $0) } }) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
+        try CapturePrivateFile.writeAtomically(data, to: url)
     }
 
     private static func validLogicalSize(_ size: CGSize) -> Bool {

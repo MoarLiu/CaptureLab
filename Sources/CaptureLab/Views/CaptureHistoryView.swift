@@ -6,10 +6,17 @@ import UniformTypeIdentifiers
 @MainActor
 struct CaptureHistoryView: View {
     @ObservedObject var model: CaptureLabViewModel
+    @ObservedObject private var history: CaptureHistoryStore
     let showEditor: () -> Void
 
     @State private var pendingDeletion: CaptureHistoryItem?
     private let columns = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 16)]
+
+    init(model: CaptureLabViewModel, showEditor: @escaping () -> Void) {
+        self.model = model
+        self.history = model.historyStore
+        self.showEditor = showEditor
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,11 +36,20 @@ struct CaptureHistoryView: View {
 
             Divider()
 
+            if history.isBusy {
+                Text(L10n.historyBusy).font(.callout).foregroundStyle(.secondary).padding()
+            }
+            if history.permissionMigrationFailures > 0 {
+                Text(L10n.text(en: "Some older history files could not be made private. Existing captures are preserved.",
+                               zh: "部分旧历史文件的权限未能收紧，已有截图已保留。"))
+                    .font(.callout).foregroundStyle(.secondary).padding()
+            }
+
             if model.historyItems.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 40))
-                    Text(L10n.noRecentCaptures)
+                    Text(history.isBusy ? L10n.text(en: "Try refreshing history shortly.", zh: "请稍后刷新历史记录。") : L10n.noRecentCaptures)
                 }
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -74,8 +90,7 @@ struct CaptureHistoryView: View {
                 open(item)
             } label: {
                 CaptureHistoryThumbnailView(
-                    url: model.historyURL(for: item),
-                    revision: model.historyRevision
+                    identity: CaptureHistoryThumbnailIdentity(id: item.id, url: model.historyURL(for: item), modifiedAt: item.modifiedAt)
                 )
                 .frame(height: 145)
                 .frame(maxWidth: .infinity)
@@ -154,17 +169,19 @@ struct CaptureHistoryView: View {
     }
 }
 
+/// History resources are immutable revisions: editing produces a new URL.
+/// An unchanged card keeps its task even when other records are added/deleted.
+struct CaptureHistoryThumbnailIdentity: Hashable {
+    let id: UUID
+    let url: URL
+    let modifiedAt: Date?
+}
+
 @MainActor
 private struct CaptureHistoryThumbnailView: View {
-    let url: URL
-    let revision: UUID
+    let identity: CaptureHistoryThumbnailIdentity
     @State private var thumbnail: NSImage?
     @State private var isLoading = true
-
-    private struct Identity: Hashable {
-        var url: URL
-        var revision: UUID
-    }
 
     var body: some View {
         ZStack {
@@ -183,10 +200,10 @@ private struct CaptureHistoryThumbnailView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .task(id: Identity(url: url, revision: revision)) {
+        .task(id: identity) {
             thumbnail = nil
             isLoading = true
-            let imageURL = url
+            let imageURL = identity.url
             let worker = Task.detached(priority: .utility) {
                 Self.thumbnailImage(at: imageURL)
             }

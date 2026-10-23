@@ -50,6 +50,15 @@ extension NSImage {
         }
     }
 
+    func renderedCaptureLabPreviewAnnotations(_ annotations: [CaptureAnnotation], originalPixelSize: CGSize) -> NSImage? {
+        // Pixelating an already downsampled image changes the sampling grid and
+        // can collapse the mosaic to a no-op. Require source-resolution pixels.
+        guard !annotations.contains(where: { $0.kind == .mosaic }) || captureLabPixelSize == originalPixelSize else { return nil }
+        return renderedWithCaptureLabAnnotations(annotations) { source, annotations in
+            captureLabRenderedBitmap(source: source, annotations: annotations, originalPixelSize: originalPixelSize)
+        }
+    }
+
     func renderedWithCaptureLabAnnotations(
         _ annotations: [CaptureAnnotation],
         bitmapRenderer: (CGImage, [CaptureAnnotation]) -> NSBitmapImageRep?
@@ -77,7 +86,8 @@ extension NSImage {
 
     private func captureLabRenderedBitmap(
         source: CGImage,
-        annotations: [CaptureAnnotation]
+        annotations: [CaptureAnnotation],
+        originalPixelSize: CGSize? = nil
     ) -> NSBitmapImageRep? {
         guard let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -95,6 +105,8 @@ extension NSImage {
         }
 
         let pixelSize = CGSize(width: source.width, height: source.height)
+        let originalSize = originalPixelSize ?? pixelSize
+        let effectScale = min(pixelSize.width / originalSize.width, pixelSize.height / originalSize.height)
         let bounds = CGRect(origin: .zero, size: pixelSize)
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -104,7 +116,7 @@ extension NSImage {
 
         for annotation in annotations {
             let style = CaptureAnnotationStyle(
-                sourcePixelSize: pixelSize,
+                sourcePixelSize: originalSize,
                 renderedImageSize: pixelSize,
                 appearance: annotation.appearance
             )
@@ -125,7 +137,7 @@ extension NSImage {
                 graphicsContext.flushGraphics()
                 guard let current = graphicsContext.cgContext.makeImage(),
                       let blurred = CaptureBlur.image(from: current, normalizedRect: annotation.normalizedRect,
-                                                       radius: annotation.appearance.blurRadius ?? 12) else { return nil }
+                                                       radius: (annotation.appearance.blurRadius ?? 12) * effectScale) else { return nil }
                 graphicsContext.cgContext.draw(blurred, in: annotation.imageRect(in: pixelSize))
             case .counter:
                 drawCaptureLabCounter(

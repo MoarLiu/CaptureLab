@@ -2,6 +2,56 @@ import Foundation
 import XCTest
 
 final class PackagingGuidanceTests: XCTestCase {
+    func testVerifyScriptKeepsTestFilterOutOfBuildArguments() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CaptureVerify-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stub = root.appendingPathComponent("swift")
+        try #"""
+        #!/bin/bash
+        printf '%s\t' "$@" >> "$CAPTURELAB_VERIFY_PROBE"
+        printf '\n' >> "$CAPTURELAB_VERIFY_PROBE"
+        """#.write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stub.path)
+        let log = root.appendingPathComponent("calls.txt")
+        for arguments in [[], ["--scratch-path", root.appendingPathComponent("scratch with spaces").path,
+                                "--test-filter", "ReviewRemediationTests.testSmallScale"]] {
+            let process = Process()
+            let errors = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = [repositoryRoot.appendingPathComponent("script/verify.sh").path] + arguments
+            process.environment = ProcessInfo.processInfo.environment.merging([
+                "PATH": root.path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"),
+                "CAPTURELAB_VERIFY_PROBE": log.path
+            ]) { _, override in override }
+            process.standardError = errors
+            try process.run()
+            let stderr = errors.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0, String(decoding: stderr, as: UTF8.self))
+        }
+        let calls = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map { $0.split(separator: "\t").map(String.init) }
+        XCTAssertEqual(calls.count, 4)
+        guard calls.count == 4 else { return }
+        XCTAssertEqual(calls[0].first, "build")
+        XCTAssertEqual(calls[1].first, "test")
+        XCTAssertFalse(calls[2].contains("--filter"))
+        XCTAssertTrue(calls[3].contains("--filter"))
+        XCTAssertTrue(calls[3].contains("ReviewRemediationTests.testSmallScale"))
+        XCTAssertTrue(calls[2].contains(root.appendingPathComponent("scratch with spaces").path))
+    }
+
+    func testDevelopmentVersionFallbackMatchesReleaseVersion() throws {
+        let environment = try String(contentsOf: repositoryRoot.appendingPathComponent("script/version.env"), encoding: .utf8)
+        let version = try XCTUnwrap(environment.split(separator: "\n").first { $0.hasPrefix("CAPTURELAB_VERSION=") })
+            .dropFirst("CAPTURELAB_VERSION=".count)
+        let source = try String(contentsOf: repositoryRoot.appendingPathComponent("Sources/CaptureLab/Views/CaptureLabViewModel.swift"), encoding: .utf8)
+        let expression = try NSRegularExpression(pattern: #""CFBundleShortVersionString"\) as\? String \?\? "([^"]+)""#)
+        let match = try XCTUnwrap(expression.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)))
+        let range = try XCTUnwrap(Range(match.range(at: 1), in: source))
+        XCTAssertEqual(String(source[range]), String(version))
+    }
+
     func testMissingLockedSigningKeyRequiresBackupRecovery() throws {
         let root = repositoryRoot
         let testRoot = FileManager.default.temporaryDirectory

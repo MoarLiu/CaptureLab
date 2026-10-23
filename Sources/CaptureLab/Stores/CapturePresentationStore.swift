@@ -15,9 +15,10 @@ final class CapturePresentationStore: ObservableObject {
     private let url: URL
     private struct Archive: Codable { var version = 1; var presets: [CapturePresentationPreset] }
 
-    init(url: URL? = nil) {
-        self.url = url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CaptureLab", isDirectory: true).appendingPathComponent("presentation-presets.json")
+    init(url: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        let proposed = url ?? CaptureLabDataRoot.supportDirectory(environment: environment)
+            .appendingPathComponent("presentation-presets.json")
+        self.url = proposed.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(proposed.lastPathComponent)
         guard FileManager.default.fileExists(atPath: self.url.path) else { return }
         do {
             guard let fileSize = try self.url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
@@ -48,10 +49,8 @@ final class CapturePresentationStore: ObservableObject {
     private func persist(_ next: [CapturePresentationPreset]) throws {
         let encoded = try JSONEncoder().encode(Archive(presets: next))
         guard encoded.count <= CaptureImageImport.maximumBytes else { throw CapturePresentationError.presetLimit }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        try encoded.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try CapturePrivateFile.ensureDirectory(url.deletingLastPathComponent())
+        try CapturePrivateFile.writeAtomically(encoded, to: url)
         presets = next
         errorMessage = nil
     }

@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Editing uses source coordinates; output preview uses exactly the same frozen
-/// composition as copy, export, pin, drag-out, history and upload.
+/// Editing uses source coordinates. Fit previews use bounded pixels; fixed zoom
+/// and output actions retain the full-resolution composition and layer order.
 struct CaptureEditorCanvasHost: View {
     @ObservedObject var model: CaptureLabViewModel
     @Binding var zoomLevel: CaptureZoomLevel
@@ -53,12 +53,23 @@ private struct CaptureRenderedPreview: View {
     let zoomLevel: CaptureZoomLevel
     @State private var image: NSImage?
     @State private var failed = false
+    @Environment(\.displayScale) private var displayScale
+    @State private var renderedRequest: Request?
+
+    private struct Request: Hashable {
+        let documentID: UUID?
+        let annotations: [CaptureAnnotation]
+        let maximumDimension: Int?
+    }
 
     var body: some View {
         GeometryReader { proxy in
+            let request = Request(documentID: model.document?.id, annotations: model.annotations,
+                maximumDimension: zoomLevel == .fit
+                    ? min(4096, max(1, Int(ceil(max(proxy.size.width, proxy.size.height) * displayScale)))) : nil)
             ZStack {
                 Color(nsColor: .underPageBackgroundColor)
-                if let image {
+                if renderedRequest == request, let image {
                     if let scale = zoomLevel.scale {
                         ScrollView([.horizontal, .vertical]) {
                             Image(nsImage: image).resizable()
@@ -69,18 +80,21 @@ private struct CaptureRenderedPreview: View {
                     } else {
                         Image(nsImage: image).resizable().scaledToFit().padding(30)
                     }
-                } else if failed {
+                } else if renderedRequest == request, failed {
                     Text(L10n.imageExportFailed).foregroundStyle(.secondary)
                 } else { ProgressView() }
             }
+            .task(id: request) {
+                // Coalesce document/annotation publications from the same edit.
+                // Hide old pixels immediately through request identity, including
+                // when a new redaction makes the previous preview unsafe.
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                image = nil
+                image = model.renderedPreviewImage(maximumDimension: request.maximumDimension)
+                failed = image == nil
+                renderedRequest = request
+            }
         }
-        .onAppear(perform: refresh)
-        .onChange(of: model.document?.id) { _ in refresh() }
-        .onChange(of: model.annotations) { _ in refresh() }
-    }
-
-    private func refresh() {
-        image = model.renderedSnapshot()?.image
-        failed = image == nil
     }
 }

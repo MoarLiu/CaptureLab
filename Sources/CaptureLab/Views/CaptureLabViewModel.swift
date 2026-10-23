@@ -81,6 +81,7 @@ final class CaptureLabViewModel: ObservableObject {
     private var highlightRecognitionTask: Task<Void, Never>?
     private var highlightRecognitionID = UUID()
     private var canvasSourceCache: (id: UUID, image: NSImage)?
+    private let outputPreviewRenderer = CaptureCompositionPreviewRenderer()
 
     @Published var annotations: [CaptureAnnotation] = [] {
         didSet {
@@ -115,16 +116,13 @@ final class CaptureLabViewModel: ObservableObject {
     @Published private(set) var selectedAnnotationID: UUID?
     @Published var cropPreset: CaptureCropPreset = .free
     @Published var cropSelection: CGRect?
-    @Published private(set) var historyRevision = UUID()
     @Published var ocrText = ""
     @Published private(set) var isCapturing = false
     @Published private(set) var isRecognizingText = false
     @Published private(set) var statusMessage = L10n.ready
     @Published private(set) var isCheckingForUpdates = false
     @Published private(set) var isUploading = false
-    @Published private(set) var historyItems: [CaptureHistoryItem] {
-        didSet { historyRevision = UUID() }
-    }
+    @Published private(set) var historyItems: [CaptureHistoryItem]
     @Published var finishEditingError: String?
 
     private let updateCheckService: UpdateCheckService
@@ -358,11 +356,19 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func renderPNG(document: CaptureDocument) -> Data? {
-        guard let source = CaptureLayerComposition.render(source: document.image, layers: document.imageLayers),
-              let data = pngDataRenderingOperation(source, annotations) else { return nil }
-        guard document.geometry != CaptureDocumentGeometry() || !document.presentation.isIdentity else { return data }
-        guard let rendered = NSImage(data: data), let transformed = document.applyingGeometry(to: rendered) else { return nil }
-        return document.presentation.render(transformed)?.captureLabPNGData()
+        guard let rendered = renderImage(document: document) else { return nil }
+        return pngDataRenderingOperation(rendered, [])
+    }
+
+    /// Display refreshes never encode PNG or commit a live text field. Exact
+    /// pixels are retained for fixed zoom; Fit can request a bounded preview.
+    func renderedPreviewImage(maximumDimension: Int? = nil) -> NSImage? {
+        guard let document else { return nil }
+        if let maximumDimension {
+            return outputPreviewRenderer.render(document: document, layers: document.imageLayers,
+                annotations: annotations, maximumDimension: maximumDimension, includesPresentation: true)
+        }
+        return renderImage(document: document)
     }
 
     /// Cached only by document identity; every layer mutation creates a new ID.
@@ -487,10 +493,18 @@ final class CaptureLabViewModel: ObservableObject {
 
     func historyURL(for item: CaptureHistoryItem) -> URL { historyStore.url(for: item) }
 
+    private func synchronizeHistoryItems() {
+        let latest = historyStore.items
+        if historyItems != latest { historyItems = latest }
+    }
+
     func refreshHistory() {
         do {
             try historyStore.refresh()
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
+            if statusMessage == L10n.historyBusy { statusMessage = L10n.ready }
+        } catch CaptureHistoryError.busy {
+            statusMessage = L10n.historyBusy
         } catch {
             reportFailure(error.localizedDescription, title: L10n.historyLoadFailedTitle)
         }
@@ -499,10 +513,10 @@ final class CaptureLabViewModel: ObservableObject {
     func deleteHistoryItem(_ item: CaptureHistoryItem) {
         do {
             try historyStore.remove(item)
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
             if currentHistoryItem?.id == item.id { currentHistoryItem = nil }
         } catch {
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
             reportFailure(error.localizedDescription, title: L10n.historyDeleteFailedTitle)
         }
     }
@@ -649,7 +663,7 @@ final class CaptureLabViewModel: ObservableObject {
             guard let image = NSImage(data: data), image.isValid else { throw CaptureLabError.imageLoadFailed }
             do {
                 item = try historyStore.record(data: data, pixelSize: image.captureLabPixelSize)
-                historyItems = historyStore.items
+                synchronizeHistoryItems()
             } catch { historyFailure = error }
             let snapshot = CaptureImageSnapshot(data: data, historyItem: item)
             latestCapture = snapshot
@@ -686,7 +700,7 @@ final class CaptureLabViewModel: ObservableObject {
         }
         do {
             currentHistoryItem = try persistEditableDocument(document, preview: data)
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
             return true
         } catch {
             reportFailure(error.localizedDescription, title: L10n.historySaveFailedTitle)
@@ -1041,7 +1055,7 @@ final class CaptureLabViewModel: ObservableObject {
             } else if loadImage(data: snapshot.preview, sourceURL: historyStore.url(for: snapshot.item), status: L10n.historyCaptureOpened, preserveExisting: !isCurrent) {
                 currentHistoryItem = snapshot.item
             }
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
         } catch { reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle) }
     }
 
@@ -1140,9 +1154,9 @@ final class CaptureLabViewModel: ObservableObject {
 
         do {
             currentHistoryItem = try persistEditableDocument(document, preview: data)
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
         } catch {
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
             statusMessage = error.localizedDescription
             finishEditingError = statusMessage
             NSSound.beep()
@@ -1178,7 +1192,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     private func historyImageSnapshot(for item: CaptureHistoryItem) throws -> CaptureHistoryStore.ImageSnapshot {
-        defer { historyItems = historyStore.items }
+        defer { synchronizeHistoryItems() }
         return try historyStore.imageSnapshot(for: item)
     }
 
@@ -1448,7 +1462,7 @@ final class CaptureLabViewModel: ObservableObject {
 
         do {
             currentHistoryItem = try persistEditableDocument(document, preview: data)
-            historyItems = historyStore.items
+            synchronizeHistoryItems()
             return nil
         } catch {
             return error.localizedDescription
@@ -1489,6 +1503,7 @@ final class CaptureLabViewModel: ObservableObject {
 
     private func invalidateDocumentActivities() {
         canvasSourceCache = nil
+        outputPreviewRenderer.removeAll()
         highlightRecognitionID = UUID()
         highlightRecognitionTask?.cancel()
         highlightRecognitionTask = nil
@@ -1560,11 +1575,13 @@ final class CaptureLabViewModel: ObservableObject {
     private func reportHistoryLoadFailureIfNeeded() {
         if let error = historyStore.loadError {
             reportFailure(error.localizedDescription, title: L10n.historyLoadFailedTitle)
+        } else if historyStore.isBusy {
+            statusMessage = L10n.historyBusy
         }
     }
 
     private static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.1"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.2"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

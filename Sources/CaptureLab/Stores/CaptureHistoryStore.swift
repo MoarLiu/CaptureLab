@@ -4,12 +4,15 @@ import Foundation
 import ImageIO
 
 enum CaptureHistoryError: LocalizedError {
+    case busy
     case imageDataUnavailable
     case imageNotFound
     case metadataLoadFailed(String)
 
     var errorDescription: String? {
         switch self {
+        case .busy:
+            return L10n.historyBusy
         case .imageDataUnavailable:
             return L10n.historyImageDataUnavailable
         case .imageNotFound:
@@ -22,7 +25,6 @@ enum CaptureHistoryError: LocalizedError {
 
 @MainActor
 final class CaptureHistoryStore: ObservableObject {
-    static let maxItemCount = 30
     typealias ImageWriter = (Data, URL) throws -> Void
     typealias MetadataWriter = (Data, URL) throws -> Void
 
@@ -33,6 +35,8 @@ final class CaptureHistoryStore: ObservableObject {
 
     @Published private(set) var items: [CaptureHistoryItem]
     @Published private(set) var loadError: CaptureHistoryError?
+    @Published private(set) var isBusy = false
+    @Published private(set) var permissionMigrationFailures = 0
     @Published private(set) var retention: CaptureHistoryRetention = .default
     @Published private(set) var recoveryProtectedIDs: Set<UUID> = []
 
@@ -49,26 +53,40 @@ final class CaptureHistoryStore: ObservableObject {
         var recoveryProtectedIDs: Set<UUID>?
     }
 
-    private let environment: [String: String]
+    private let supportDirectory: URL
+    let historyDirectory: URL
+    var metadataURL: URL { historyDirectory.appendingPathComponent("history.json") }
     private let fileManager: FileManager
     private let imageWriter: ImageWriter
     private let metadataWriter: MetadataWriter
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let now: () -> Date
+    // Reject reentrant access before opening another fd. POSIX record locks
+    // are per process; closing that fd would release the outer operation's lock.
+    private static var activeDirectories: Set<String> = []
+    private var hasExclusiveLock = false
+    private var didMigratePermissions = false
+    #if DEBUG
+    private(set) var lastLockDuration: TimeInterval = 0
+    #endif
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
         imageWriter: @escaping ImageWriter = { data, url in
-            try data.write(to: url, options: .atomic)
+            try CapturePrivateFile.writeAtomically(data, to: url)
         },
         metadataWriter: @escaping MetadataWriter = { data, url in
-            try data.write(to: url, options: .atomic)
+            try CapturePrivateFile.writeAtomically(data, to: url)
         },
         now: @escaping () -> Date = Date.init
     ) {
-        self.environment = environment
+        // Freeze the resolved directories for the lifetime of this store, so
+        // the lock, metadata and resources cannot diverge through an alias.
+        let support = CaptureLabDataRoot.supportDirectory(environment: environment).resolvingSymlinksInPath()
+        self.supportDirectory = support
+        self.historyDirectory = support.appendingPathComponent("History", isDirectory: true).resolvingSymlinksInPath()
         self.fileManager = fileManager
         self.imageWriter = imageWriter
         self.metadataWriter = metadataWriter
@@ -103,20 +121,12 @@ final class CaptureHistoryStore: ObservableObject {
                 items = retained
                 Self.removeUnreferencedResources(retaining: retained, historyDirectory: historyDirectory, fileManager: fileManager)
             }
+        } catch CaptureHistoryError.busy {
+            // A live writer is not a damaged index. Opening history or refreshing
+            // can retry later without an erroneous startup modal or cleanup.
         } catch {
-            if items.isEmpty {
-                items = Self.recoverItemsFromDirectory(historyDirectory: historyDirectory, fileManager: fileManager)
-            }
             loadError = .metadataLoadFailed(error.localizedDescription)
         }
-    }
-
-    var historyDirectory: URL {
-        Self.historyDirectory(environment: environment)
-    }
-
-    var metadataURL: URL {
-        Self.metadataURL(environment: environment)
     }
 
     func record(data: Data, pixelSize: CGSize, createdAt: Date = Date()) throws -> CaptureHistoryItem {
@@ -245,6 +255,10 @@ final class CaptureHistoryStore: ObservableObject {
     func refresh() throws {
         do {
             try withExclusiveHistoryLock {
+                if permissionMigrationFailures > 0 {
+                    didMigratePermissions = false
+                    migratePermissionsIfNeeded()
+                }
                 let refreshedItems: [CaptureHistoryItem]
                 if fileManager.fileExists(atPath: metadataURL.path) {
                     refreshedItems = try Self.loadItems(
@@ -272,6 +286,8 @@ final class CaptureHistoryStore: ObservableObject {
                     fileManager: fileManager
                 )
             }
+        } catch CaptureHistoryError.busy {
+            throw CaptureHistoryError.busy
         } catch {
             let historyError = CaptureHistoryError.metadataLoadFailed(error.localizedDescription)
             loadError = historyError
@@ -314,85 +330,6 @@ final class CaptureHistoryStore: ObservableObject {
                     try fileManager.removeItem(at: projectURL)
                 }
             }
-        }
-    }
-
-    /// Same-size edits replace the existing PNG atomically. A crop first writes
-    /// a new PNG, then commits its filename and dimensions together, so a failed
-    /// metadata write leaves the previous image and dimensions usable.
-    /// Return nil if retention has removed the item while its editor was open.
-    func updateImage(
-        data: Data,
-        for item: CaptureHistoryItem,
-        pixelSize: CGSize? = nil
-    ) throws -> CaptureHistoryItem? {
-        guard !data.isEmpty else {
-            throw CaptureHistoryError.imageDataUnavailable
-        }
-        if let pixelSize {
-            guard pixelSize.width.isFinite, pixelSize.height.isFinite,
-                  pixelSize.width >= 1, pixelSize.height >= 1,
-                  pixelSize.width < CGFloat(Int.max), pixelSize.height < CGFloat(Int.max) else {
-                throw CaptureHistoryError.imageDataUnavailable
-            }
-        }
-
-        return try withExclusiveHistoryLock {
-            let currentItems = try latestItemsFromDisk()
-            guard let currentItem = currentItems.first(where: { $0.id == item.id }) else {
-                items = currentItems
-                return nil
-            }
-            items = currentItems
-
-            let width = pixelSize.map { Int($0.width) } ?? currentItem.pixelWidth
-            let height = pixelSize.map { Int($0.height) } ?? currentItem.pixelHeight
-            if width == currentItem.pixelWidth, height == currentItem.pixelHeight, currentItem.projectFileName == nil {
-                let temporaryURL = historyDirectory.appendingPathComponent(".image-update-\(UUID().uuidString).pending")
-                defer { try? fileManager.removeItem(at: temporaryURL) }
-                try imageWriter(data, temporaryURL)
-                // rename replaces the destination in one operation on this
-                // filesystem. A writer that partially writes or reports failure
-                // has touched only the temporary file, never the original PNG.
-                let destination = url(for: currentItem)
-                let result = temporaryURL.path.withCString { source in
-                    destination.path.withCString { Darwin.rename(source, $0) }
-                }
-                guard result == 0 else {
-                    throw Self.posixError(code: errno, operation: "replace history image")
-                }
-                items = currentItems
-                return currentItem
-            }
-
-            var updatedItem = currentItem
-            updatedItem.projectFileName = nil
-            updatedItem.fileName = "capture-\(Self.fileTimestampFormatter.string(from: currentItem.createdAt))-\(UUID().uuidString)-\(currentItem.id.uuidString).png"
-            updatedItem.pixelWidth = width
-            updatedItem.pixelHeight = height
-            let updatedURL = url(for: updatedItem)
-            do {
-                try imageWriter(data, updatedURL)
-            } catch {
-                try? fileManager.removeItem(at: updatedURL)
-                items = currentItems
-                throw error
-            }
-            let updatedItems = currentItems.map { $0.id == currentItem.id ? updatedItem : $0 }
-            do {
-                try persist(updatedItems)
-            } catch {
-                synchronizeAfterMetadataFailure(fallback: currentItems)
-                throw error
-            }
-
-            items = updatedItems
-            Self.removeUnreferencedResources(
-                retaining: updatedItems,
-                historyDirectory: historyDirectory,
-                fileManager: fileManager
-            )
-            return updatedItem
         }
     }
 
@@ -461,6 +398,7 @@ final class CaptureHistoryStore: ObservableObject {
 
     private func persist(_ items: [CaptureHistoryItem], policy: CaptureHistoryRetention? = nil,
                          protecting protectedIDs: Set<UUID>? = nil) throws {
+        assert(hasExclusiveLock)
         try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
         let effective = policy ?? ((try? readRetention()) ?? retention)
         let protected = (protectedIDs ?? recoveryProtectedIDs).intersection(items.map(\.id))
@@ -512,6 +450,7 @@ final class CaptureHistoryStore: ObservableObject {
     }
 
     private func synchronizeAfterMetadataFailure(fallback: [CaptureHistoryItem]) {
+        assert(hasExclusiveLock)
         // A writer may report failure after its atomic replacement committed.
         // Only a readable durable snapshot permits cleanup; otherwise preserve
         // all images for later recovery, including a possibly committed crop.
@@ -555,59 +494,88 @@ final class CaptureHistoryStore: ObservableObject {
         reclaimsAbandonedUpdates: Bool = true,
         _ operation: () throws -> T
     ) throws -> T {
-        try Self.withExclusiveHistoryLock(
-            historyDirectory: historyDirectory,
-            fileManager: fileManager,
-            reclaimsAbandonedUpdates: reclaimsAbandonedUpdates,
-            operation: operation
-        )
-    }
-
-    private static func withExclusiveHistoryLock<T>(
-        historyDirectory: URL,
-        fileManager: FileManager,
-        reclaimsAbandonedUpdates: Bool = true,
-        operation: () throws -> T
-    ) throws -> T {
-        try fileManager.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
-        let lockURL = historyDirectory.appendingPathComponent(".history.lock")
-        let descriptor = lockURL.path.withCString {
-            Darwin.open($0, O_CREAT | O_RDWR, mode_t(0o600))
+        let directory = historyDirectory
+        let key = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        guard Self.activeDirectories.insert(key).inserted else {
+            throw CaptureHistoryError.busy
         }
-        guard descriptor >= 0 else {
-            throw Self.posixError(code: errno, operation: "open history lock")
+        defer { Self.activeDirectories.remove(key) }
+        try CapturePrivateFile.ensureDirectory(supportDirectory, fileManager: fileManager)
+        try CapturePrivateFile.ensureDirectory(directory, fileManager: fileManager)
+        let descriptor = directory.appendingPathComponent(".history.lock").path.withCString {
+            Darwin.open($0, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
         }
+        guard descriptor >= 0 else { throw Self.posixError(code: errno, operation: "open history lock") }
         defer { Darwin.close(descriptor) }
-
+        var status = stat()
+        guard Darwin.fstat(descriptor, &status) == 0 else { throw Self.posixError(code: errno, operation: "inspect history lock") }
+        guard status.st_mode & S_IFMT == S_IFREG, status.st_nlink == 1 else { throw CocoaError(.fileReadUnsupportedScheme) }
+        guard Darwin.fchmod(descriptor, mode_t(0o600)) == 0 else {
+            throw Self.posixError(code: errno, operation: "secure history lock")
+        }
         var lock = Darwin.flock()
         lock.l_type = Int16(F_WRLCK)
         lock.l_whence = Int16(SEEK_SET)
-        while Darwin.fcntl(descriptor, F_SETLKW, &lock) != 0 {
+        while Darwin.fcntl(descriptor, F_SETLK, &lock) != 0 {
             let code = errno
-            if code == EINTR {
-                continue
+            if code == EINTR { continue }
+            if code == EAGAIN || code == EACCES {
+                isBusy = true
+                throw CaptureHistoryError.busy
             }
             throw Self.posixError(code: code, operation: "lock history")
         }
+        hasExclusiveLock = true
+        isBusy = false
+        #if DEBUG
+        let acquiredAt = ProcessInfo.processInfo.systemUptime
+        #endif
         defer {
+            #if DEBUG
+            lastLockDuration = ProcessInfo.processInfo.systemUptime - acquiredAt
+            #endif
+            hasExclusiveLock = false
             lock.l_type = Int16(F_UNLCK)
             _ = Darwin.fcntl(descriptor, F_SETLK, &lock)
         }
-        // Every image writer holds this same lock. Once it is acquired, no
-        // other process can still be using an update's temporary file, so a
-        // matching file is an abandoned replacement rather than a live edit.
-        // Reclaim it even when metadata is unreadable; pending files can never
-        // be valid PNG history references. Surface cleanup failures so a later
-        // operation can retry without silently retaining a private screenshot.
-        // Reading a valid image must remain possible even if cleanup needs a
-        // later retry (for example, a pending file is temporarily undeletable).
+        migratePermissionsIfNeeded()
+        // Never reclaim pending files until the cross-process lock is held.
+        // Reads can still succeed when an abandoned file cannot yet be removed.
         if reclaimsAbandonedUpdates {
-            try removeAbandonedImageUpdates(
-                historyDirectory: historyDirectory,
-                fileManager: fileManager
-            )
+            do { try Self.removeAbandonedImageUpdates(historyDirectory: directory, fileManager: fileManager) }
+            catch {
+                if items.isEmpty {
+                    // Preserve readable history on cleanup failure, but only
+                    // while holding the lock, never after a directory/open error.
+                    items = (try? Self.loadItems(metadataURL: metadataURL, fileManager: fileManager, decoder: decoder))
+                        ?? Self.recoverItemsFromDirectory(historyDirectory: directory, fileManager: fileManager)
+                }
+                throw error
+            }
         }
         return try operation()
+    }
+
+    private func migratePermissionsIfNeeded() {
+        assert(hasExclusiveLock)
+        guard !didMigratePermissions else { return }
+        didMigratePermissions = true
+        guard let urls = try? fileManager.contentsOfDirectory(at: historyDirectory, includingPropertiesForKeys: nil) else {
+            permissionMigrationFailures = 1
+            return
+        }
+        var failures = 0
+        for url in urls where url.lastPathComponent == "history.json" || ["png", "capturelab", "pending"].contains(url.pathExtension.lowercased()) {
+            // In particular, do not open/close .history.lock here: doing so would
+            // release this process's record lock. Never recurse into Release/.
+            var status = stat()
+            guard url.path.withCString({ Darwin.lstat($0, &status) }) == 0,
+                  status.st_mode & S_IFMT == S_IFREG else { continue }
+            guard status.st_nlink == 1 else { failures += 1; continue }
+            do { try CapturePrivateFile.secureExistingFile(url) }
+            catch { failures += 1 }
+        }
+        permissionMigrationFailures = failures
     }
 
     private static func posixError(code: Int32, operation: String) -> NSError {
@@ -639,7 +607,6 @@ final class CaptureHistoryStore: ObservableObject {
             }
             return item
         }
-        .map { $0 }
     }
 
     private static func recoverItemsFromDirectory(
@@ -779,16 +746,6 @@ final class CaptureHistoryStore: ObservableObject {
             return nil
         }
         return UUID(uuidString: String(stem.suffix(36)))
-    }
-
-    private static func historyDirectory(environment: [String: String]) -> URL {
-        CaptureLabDataRoot.supportDirectory(environment: environment)
-            .appendingPathComponent("History", isDirectory: true)
-    }
-
-    private static func metadataURL(environment: [String: String]) -> URL {
-        historyDirectory(environment: environment)
-            .appendingPathComponent("history.json")
     }
 
     private static let fileTimestampFormatter: DateFormatter = {

@@ -186,6 +186,10 @@ final class CaptureLayersNSCanvasView: NSView {
     var onError: (String) -> Void = { _ in }
     private var preview: NSImage?
     private var previewIsValid = false
+    private(set) var compositionRenderCount = 0
+    var previewPixelSize: CGSize? { preview?.captureLabPixelSize }
+    private let previewRenderer = CaptureCompositionPreviewRenderer()
+    var previewDecodeCount: Int { previewRenderer.decodeCount }
     private var gesture: Gesture?
     private var marquee: CGRect?
     private var guides: [CGFloat] = []
@@ -263,10 +267,16 @@ final class CaptureLayersNSCanvasView: NSView {
         NSColor.textBackgroundColor.setFill(); bounds.fill()
         guard let document else { return }
         if !previewIsValid {
+            compositionRenderCount += 1
             // Release the previous large bitmap before allocating a new one.
             preview = nil
             preview = autoreleasepool {
-                CaptureLayerComposition.render(source: document.image, layers: layers)
+                if gesture != nil {
+                    let scale = window?.backingScaleFactor ?? 2
+                    let dimension = min(4096, max(1, Int(ceil(max(outputDisplayRect.width, outputDisplayRect.height) * scale))))
+                    return previewRenderer.render(document: document, layers: layers, annotations: annotations, maximumDimension: dimension)
+                }
+                return CaptureLayerComposition.render(source: document.image, layers: layers)
                     .flatMap { $0.renderedWithCaptureLabAnnotations(annotations) }
                     .flatMap { document.applyingGeometry(to: $0) }
             }
@@ -436,6 +446,7 @@ final class CaptureLayersNSCanvasView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let g = gesture else { return }
         gesture = nil; marquee = nil; guides = []
+        previewIsValid = false
         if layers != g.layers || annotations != g.annotations, !onCommit(layers, annotations) {
             layers = g.layers; annotations = g.annotations; previewIsValid = false
         }

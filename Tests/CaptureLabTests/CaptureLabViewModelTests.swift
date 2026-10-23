@@ -475,7 +475,10 @@ final class CaptureLabViewModelTests: XCTestCase {
         let croppedImage = try XCTUnwrap(CaptureImageCrop.crop(originalImage,
             selection: CGRect(x: 0.2, y: 0.2, width: 0.5, height: 0.5)))
         let croppedData = try XCTUnwrap(croppedImage.captureLabPNGData())
-        let cropped = try XCTUnwrap(writer.updateImage(data: croppedData, for: original, pixelSize: croppedImage.captureLabPixelSize))
+        let croppedDocument = CaptureDocument(image: croppedImage, sourceURL: nil, createdAt: original.createdAt)
+        let cropped = try writer.saveEditable(preview: croppedData,
+            project: CaptureProjectStore.encode(document: croppedDocument, annotations: []), for: original,
+            pixelSize: croppedImage.captureLabPixelSize, createdAt: original.createdAt)
         let expectedPixels = try Self.pixelData(croppedImage)
         XCTAssertEqual(model.historyItems, [original])
 
@@ -556,7 +559,7 @@ final class CaptureLabViewModelTests: XCTestCase {
         model.annotations = [Self.mosaicAnnotation]
         let editedData = try XCTUnwrap(model.document?.image.renderedWithCaptureLabAnnotations(model.annotations)?.captureLabPNGData())
         let otherStore = CaptureHistoryStore(environment: fixture.environment)
-        for _ in 0..<CaptureHistoryStore.maxItemCount {
+        for _ in 0..<CaptureHistoryRetention.default.maximumCount {
             _ = try otherStore.record(data: originalData, pixelSize: source.captureLabPixelSize)
         }
         let retainedOtherItems = Array(otherStore.items.dropLast())
@@ -733,7 +736,7 @@ final class CaptureLabViewModelTests: XCTestCase {
         let destinationURL = fixture.home.appendingPathComponent("frozen export.png")
         let frozenPNGData = Data("first-document-render".utf8)
         var model: CaptureLabViewModel!
-        var firstImage: NSImage?
+        var expectedPixels: Data?
         var events: [String] = []
         var renderCount = 0
         model = CaptureLabViewModel(
@@ -743,8 +746,8 @@ final class CaptureLabViewModelTests: XCTestCase {
             pngDataRenderingOperation: { image, annotations in
                 events.append("render")
                 renderCount += 1
-                XCTAssertTrue(image === firstImage)
-                XCTAssertEqual(annotations, [firstAnnotation])
+                XCTAssertEqual(try? Self.pixelData(image), expectedPixels)
+                XCTAssertTrue(annotations.isEmpty, "Encoding receives the already-composited final pixels")
                 return frozenPNGData
             },
             saveDestinationOperation: { _ in
@@ -755,8 +758,8 @@ final class CaptureLabViewModelTests: XCTestCase {
             }
         )
         model.openHistoryItem(first)
-        firstImage = try XCTUnwrap(model.document?.image)
         model.addAnnotation(firstAnnotation)
+        expectedPixels = try Self.pixelData(XCTUnwrap(model.renderedPreviewImage()))
         let textEditorOwner = NSObject()
         var didCommitPendingText = false
         CaptureEditingSession.shared.registerPendingTextCommitter(owner: textEditorOwner) {

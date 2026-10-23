@@ -8,7 +8,17 @@ enum CaptureLayerComposition {
         guard !layers.isEmpty else { return source }
         guard (try? CaptureLayerImport.validate(layers)) != nil,
               let base = source.captureLabCGImage(),
-              let context = CGContext(data: nil, width: base.width, height: base.height,
+              let output = render(source: base, layers: layers, image: { layer in
+                  guard let imageSource = CGImageSourceCreateWithData(layer.pngData as CFData, nil) else { return nil }
+                  return CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+              }) else { return nil }
+        return NSImage(cgImage: output, size: source.size)
+    }
+
+    /// Resource validation/decoding belongs to the caller. Both exact output and
+    /// bounded previews use this drawing order; moving a layer never raises it.
+    static func render(source base: CGImage, layers: [CaptureImageLayer], image: (CaptureImageLayer) -> CGImage?) -> CGImage? {
+        guard let context = CGContext(data: nil, width: base.width, height: base.height,
                                       bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
@@ -16,8 +26,7 @@ enum CaptureLayerComposition {
         context.interpolationQuality = .high
         context.draw(base, in: CGRect(origin: .zero, size: size))
         for layer in ordered(layers) {
-            guard let imageSource = CGImageSourceCreateWithData(layer.pngData as CFData, nil),
-                  let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { return nil }
+            guard let image = image(layer) else { return nil }
             let r = layer.normalizedRect
             context.saveGState()
             context.translateBy(x: r.midX * size.width, y: (1 - r.midY) * size.height)
@@ -26,8 +35,7 @@ enum CaptureLayerComposition {
                                            width: r.width * size.width, height: r.height * size.height))
             context.restoreGState()
         }
-        guard let output = context.makeImage() else { return nil }
-        return NSImage(cgImage: output, size: source.size)
+        return context.makeImage()
     }
 
     static func ordered(_ layers: [CaptureImageLayer]) -> [CaptureImageLayer] {

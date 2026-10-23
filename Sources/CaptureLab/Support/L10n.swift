@@ -16,6 +16,10 @@ enum L10n {
     }
 
     static let appName = "CaptureLab"
+    static var historyBusy: String {
+        text(en: "Capture history is in use by another operation. Your edits are preserved. Try again shortly.",
+             zh: "其他操作正在使用截图历史，当前编辑已保留。请稍后重试。")
+    }
     static var shortcutSettingsTitle: String { text(en: "Shortcut Settings", zh: "快捷键配置") }
     static var showCaptureLab: String { text(en: "Show CaptureLab", zh: "显示 CaptureLab") }
     static var captureRegion: String { text(en: "Capture Region", zh: "区域截图") }

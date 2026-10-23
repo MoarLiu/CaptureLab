@@ -29,9 +29,15 @@ let package = Package(
             name: "CaptureLabUpdateSwap",
             path: "Sources/CaptureLabUpdateSwap"
         ),
+        // Test-support executable (also built by an unfiltered swift build).
+        // Packaging selects the app products and never embeds this fixture.
+        .executableTarget(
+            name: "CaptureLabHistoryLockFixture",
+            path: "Tests/HistoryLockFixture"
+        ),
         .testTarget(
             name: "CaptureLabTests",
-            dependencies: ["CaptureLab", "CaptureLabUpdateSwap"],
+            dependencies: ["CaptureLab", "CaptureLabUpdateSwap", "CaptureLabHistoryLockFixture"],
             path: "Tests/CaptureLabTests"
         )
     ]
