@@ -432,6 +432,20 @@ final class CloudflareR2SettingsStore: ObservableObject {
         }
     }
 
+    func clear() throws {
+        try transactionLock.withLock {
+            let accessKeyID = persistedAccessKeyIDFromDisk()
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+            }
+            if let accessKeyID {
+                try secretStore.deleteSecret(for: accessKeyID)
+            }
+            settings = nil
+            loadError = nil
+        }
+    }
+
     func requiredSettings() throws -> CloudflareR2Settings {
         do {
             let refreshed = try transactionLock.withLock {
@@ -678,19 +692,49 @@ final class CloudflareR2UploadService {
             date: uploadDate,
             uuid: uuid()
         )
-        let signedRequest = try signedPUTRequest(
-            settings: settings,
-            objectKey: objectKey,
-            data: request.data,
-            contentType: request.contentType,
-            requestDate: uploadDate
-        )
-        _ = try await performUploadWithRetry(signedRequest, data: request.data)
+        _ = try await performUploadWithRetry(data: request.data) {
+            try self.signedPUTRequest(
+                settings: settings,
+                objectKey: objectKey,
+                data: request.data,
+                contentType: request.contentType,
+                requestDate: self.now()
+            )
+        }
         return CloudflareR2UploadResult(
             url: try Self.publicURL(for: objectKey, settings: settings),
             objectKey: objectKey,
             sizeBytes: request.data.count
         )
+    }
+
+    /// Confirms the bucket accepts these credentials without uploading an image.
+    func probe(_ rawSettings: CloudflareR2Settings) async throws {
+        let settings = try rawSettings.normalized()
+        let endpoint = try Self.s3Endpoint(from: settings.endpoint)
+        let canonicalURI = Self.uriEncodePath("/\(settings.bucket)")
+        var components = URLComponents()
+        components.scheme = endpoint.scheme
+        components.host = endpoint.host
+        components.port = endpoint.port
+        components.percentEncodedPath = canonicalURI
+        guard let url = components.url else { throw CloudflareR2Error.invalidURL(L10n.r2Endpoint) }
+        let request = try signedRequest(
+            method: "HEAD",
+            settings: settings,
+            url: url,
+            canonicalURI: canonicalURI,
+            payload: Data(),
+            contentType: nil,
+            requestDate: now()
+        )
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw CloudflareR2Error.uploadFailed(L10n.r2UploadNoHTTPResponse)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CloudflareR2Error.uploadFailed(Self.userFacingHTTPError(statusCode: http.statusCode))
+        }
     }
 
     func signedPUTRequest(
@@ -704,8 +748,6 @@ final class CloudflareR2UploadService {
         let endpoint = try Self.s3Endpoint(from: settings.endpoint)
         let rawPath = "/\(settings.bucket)/\(objectKey)"
         let canonicalURI = Self.uriEncodePath(rawPath)
-        let hostHeader = endpoint.port.map { "\(endpoint.host):\($0)" } ?? endpoint.host
-
         var components = URLComponents()
         components.scheme = endpoint.scheme
         components.host = endpoint.host
@@ -714,20 +756,47 @@ final class CloudflareR2UploadService {
         guard let url = components.url else {
             throw CloudflareR2Error.invalidURL(L10n.r2Endpoint)
         }
+        return try signedRequest(
+            method: "PUT",
+            settings: settings,
+            url: url,
+            canonicalURI: canonicalURI,
+            payload: data,
+            contentType: contentType,
+            requestDate: requestDate
+        )
+    }
 
+    private func signedRequest(
+        method: String,
+        settings: CloudflareR2Settings,
+        url: URL,
+        canonicalURI: String,
+        payload: Data,
+        contentType: String?,
+        requestDate: Date
+    ) throws -> URLRequest {
+        let endpoint = try Self.s3Endpoint(from: settings.endpoint)
+        let hostHeader = endpoint.port.map { "\(endpoint.host):\($0)" } ?? endpoint.host
+        let data = payload
         let payloadHash = Self.sha256Hex(data)
         let amzDate = Self.s3DateTimeString(from: requestDate)
         let dateStamp = Self.s3DateString(from: requestDate)
         let scope = "\(dateStamp)/auto/s3/aws4_request"
-        let canonicalHeaders = [
-            "content-type:\(contentType)",
+        var headerLines = [
             "host:\(hostHeader)",
             "x-amz-content-sha256:\(payloadHash)",
             "x-amz-date:\(amzDate)"
-        ].joined(separator: "\n") + "\n"
-        let signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date"
+        ]
+        var signedHeaderNames = ["host", "x-amz-content-sha256", "x-amz-date"]
+        if let contentType {
+            headerLines.insert("content-type:\(contentType)", at: 0)
+            signedHeaderNames.insert("content-type", at: 0)
+        }
+        let canonicalHeaders = headerLines.joined(separator: "\n") + "\n"
+        let signedHeaders = signedHeaderNames.joined(separator: ";")
         let canonicalRequest = [
-            "PUT",
+            method,
             canonicalURI,
             "",
             canonicalHeaders,
@@ -748,8 +817,10 @@ final class CloudflareR2UploadService {
         )
 
         var request = URLRequest(url: url, timeoutInterval: 60)
-        request.httpMethod = "PUT"
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.httpMethod = method
+        if let contentType {
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
         request.setValue(hostHeader, forHTTPHeaderField: "Host")
         request.setValue(payloadHash, forHTTPHeaderField: "x-amz-content-sha256")
         request.setValue(amzDate, forHTTPHeaderField: "x-amz-date")
@@ -761,12 +832,8 @@ final class CloudflareR2UploadService {
     }
 
     func objectKey(fileName: String, settings: CloudflareR2Settings, date: Date, uuid: UUID) -> String {
-        let dayFormatter = DateFormatter()
-        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dayFormatter.timeZone = TimeZone(secondsFromGMT: 0)
-        dayFormatter.dateFormat = "yyyy/MM/dd"
         let prefix = (try? settings.normalized().pathPrefix) ?? "captures"
-        return "\(prefix)/\(dayFormatter.string(from: date))/\(uuid.uuidString)-\(Self.safeFileName(fileName))"
+        return "\(prefix)/\(Self.s3DayString(from: date))/\(uuid.uuidString)-\(Self.safeFileName(fileName))"
     }
 
     static func publicURL(for objectKey: String, settings rawSettings: CloudflareR2Settings) throws -> String {
@@ -798,11 +865,15 @@ final class CloudflareR2UploadService {
         return (safeStem.isEmpty ? "capture" : safeStem) + "." + (safeExtension.isEmpty ? "png" : safeExtension)
     }
 
-    private func performUploadWithRetry(_ request: URLRequest, data: Data) async throws -> Data {
+    private func performUploadWithRetry(data: Data, makeRequest: () throws -> URLRequest) async throws -> Data {
         let retryDelays: [UInt64] = [250_000_000, 750_000_000, 1_500_000_000]
         var attempt = 0
         while true {
+            let request: URLRequest
+            do { request = try makeRequest() }
+            catch { throw error }
             do {
+                try Task.checkCancellation()
                 let (body, response) = try await transport(request, data)
                 guard let http = response as? HTTPURLResponse else {
                     throw CloudflareR2Error.uploadFailed(L10n.r2UploadNoHTTPResponse)
@@ -811,22 +882,20 @@ final class CloudflareR2UploadService {
                     return body
                 }
                 if Self.isRetryable(statusCode: http.statusCode), attempt < retryDelays.count {
-                    try await Task.sleep(nanoseconds: retryDelays[attempt])
                     attempt += 1
-                    continue
+                } else {
+                    throw CloudflareR2Error.uploadFailed(Self.userFacingHTTPError(statusCode: http.statusCode))
                 }
-                throw CloudflareR2Error.uploadFailed(Self.userFacingHTTPError(statusCode: http.statusCode))
             } catch {
-                if let r2Error = error as? CloudflareR2Error {
-                    throw r2Error
-                }
+                if error is CancellationError { throw error }
+                if let r2Error = error as? CloudflareR2Error { throw r2Error }
                 if Self.isRetryable(networkError: error), attempt < retryDelays.count {
-                    try await Task.sleep(nanoseconds: retryDelays[attempt])
                     attempt += 1
-                    continue
+                } else {
+                    throw CloudflareR2Error.uploadFailed(Self.userFacingNetworkError(error))
                 }
-                throw CloudflareR2Error.uploadFailed(Self.userFacingNetworkError(error))
             }
+            try await Task.sleep(nanoseconds: retryDelays[attempt - 1])
         }
     }
 
@@ -923,21 +992,32 @@ final class CloudflareR2UploadService {
             .joined(separator: "/")
     }
 
-    private static func s3DateTimeString(from date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-        return formatter.string(from: date)
+    private enum S3DateFormatting {
+        static let lock = NSLock()
+        static let dayPath = make("yyyy/MM/dd")
+        static let dateTime = make("yyyyMMdd'T'HHmmss'Z'")
+        static let dateStamp = make("yyyyMMdd")
+
+        static func make(_ format: String) -> DateFormatter {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = format
+            return formatter
+        }
+
+        static func string(_ formatter: DateFormatter, _ date: Date) -> String {
+            lock.lock()
+            defer { lock.unlock() }
+            return formatter.string(from: date)
+        }
     }
 
-    private static func s3DateString(from date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyyMMdd"
-        return formatter.string(from: date)
-    }
+    private static func s3DayString(from date: Date) -> String { S3DateFormatting.string(S3DateFormatting.dayPath, date) }
+
+    private static func s3DateTimeString(from date: Date) -> String { S3DateFormatting.string(S3DateFormatting.dateTime, date) }
+
+    private static func s3DateString(from date: Date) -> String { S3DateFormatting.string(S3DateFormatting.dateStamp, date) }
 
     private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "CaptureLab",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         .executable(name: "CaptureLab", targets: ["CaptureLab"]),
@@ -20,6 +20,7 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CryptoKit"),
                 .linkedFramework("Security"),
+                .linkedFramework("ServiceManagement"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("UniformTypeIdentifiers"),
                 .linkedFramework("Vision")

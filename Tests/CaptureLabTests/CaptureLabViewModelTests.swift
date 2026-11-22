@@ -971,6 +971,31 @@ final class CaptureLabViewModelTests: XCTestCase {
         return Data(bytes: try XCTUnwrap(context.data), count: source.width * source.height * 4)
     }
 
+    func testUndoKeepsTheCurrentToolAndCoalescesContinuousStyleEdits() throws {
+        let fixture = try HistoryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let model = CaptureLabViewModel(
+            r2SettingsStore: Self.settingsStore(for: fixture),
+            historyStore: CaptureHistoryStore(environment: fixture.environment),
+            failurePresentationOperation: { _, _ in }
+        )
+        XCTAssertTrue(model.importImageData(try XCTUnwrap(Self.fixtureImage().captureLabPNGData())))
+        let annotation = CaptureAnnotation(kind: .rectangle, normalizedRect: CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.2))
+        model.selectedTool = .rectangle
+        model.addAnnotation(annotation)
+        model.selectAnnotation(annotation.id)
+        let original = try XCTUnwrap(model.annotations.first?.appearance)
+        model.annotationAppearance.color = CaptureAnnotationColor(.systemBlue)
+        model.annotationAppearance.color = CaptureAnnotationColor(.systemGreen)
+        model.annotationAppearance.lineWidth = 9
+        model.undoAnnotation()
+        XCTAssertEqual(model.annotations.first?.appearance, original)
+        XCTAssertEqual(model.selectedTool, .rectangle)
+        model.undoAnnotation()
+        XCTAssertTrue(model.annotations.isEmpty)
+        XCTAssertEqual(model.selectedTool, .rectangle)
+    }
+
     private static func fixtureImage() -> NSImage {
         let image = NSImage(size: NSSize(width: 64, height: 48))
         image.lockFocus()

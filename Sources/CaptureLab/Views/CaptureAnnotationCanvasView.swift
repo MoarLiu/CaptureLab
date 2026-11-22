@@ -695,8 +695,10 @@ final class CaptureAnnotationNSCanvasView: NSView, NSTextFieldDelegate {
             CGPoint(x: abs(point.x - imageRect.minX) < 8 ? imageRect.minX : (abs(point.x - imageRect.maxX) < 8 ? imageRect.maxX : point.x),
                     y: abs(point.y - imageRect.minY) < 8 ? imageRect.minY : (abs(point.y - imageRect.maxY) < 8 ? imageRect.maxY : point.y))
         }
+        // Snap only the moving corner. Snapping the stationary anchor jumps the
+        // opposite edge to the image boundary when the crop already sits near it.
         let rect = CaptureCropGeometry.selection(
-            anchor: CaptureGeometry.normalizedPoint(from: snapped(start), in: imageRect),
+            anchor: CaptureGeometry.normalizedPoint(from: start, in: imageRect),
             current: CaptureGeometry.normalizedPoint(from: snapped(current), in: imageRect),
             size: document.canvasSize, ratio: cropPreset.ratio(in: document.canvasSize))
         let selection: CGRect? = rect.width * imageRect.width >= 1 && rect.height * imageRect.height >= 1 ? rect : nil

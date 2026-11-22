@@ -44,7 +44,12 @@ final class DirectRecognitionController: ObservableObject {
                 self.message = values.isEmpty
                     ? L10n.text(en: "No results found. Clipboard unchanged.", zh: "未识别到内容，剪贴板保持不变。")
                     : L10n.text(en: "Select a result to copy.", zh: "选择识别结果并复制。")
-                if kind == .text, let text = values.first { self.copy(text) }
+                if let text = values.first {
+                    self.copy(text)
+                    if kind == .qrCode {
+                        self.message = L10n.text(en: "Result copied.", zh: "识别结果已复制。")
+                    }
+                }
             } catch {
                 guard let self, self.requestID == id else { return }
                 if !(error is CancellationError) { self.failure = error.localizedDescription }

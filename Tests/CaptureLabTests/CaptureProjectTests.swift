@@ -461,6 +461,19 @@ final class CaptureProjectTests: XCTestCase {
         XCTAssertEqual(model.renderedSnapshot()?.image?.captureLabPixelSize, CGSize(width: 160, height: 120))
     }
 
+    func testEncodedBudgetRejectsOversizedProjectsWithoutBuildingTheFile() throws {
+        let image = try ProjectFixture.image()
+        let document = CaptureDocument(image: image, sourceURL: nil, createdAt: Date(timeIntervalSinceReferenceDate: 10))
+        let annotations = ProjectFixture.annotations
+        try CaptureProjectStore.fitsEncodedBudget(document: document, annotations: annotations)
+        let encoded = try CaptureProjectStore.encode(document: document, annotations: annotations)
+        let pngCount = try XCTUnwrap(image.captureLabPNGData()).count
+        XCTAssertGreaterThanOrEqual(CaptureProjectStore.maximumEncodedPNGBytes(pixelSize: image.captureLabPixelSize), pngCount)
+        let projected = CaptureProjectStore.projectedEncodedBytes(sourcePNGCount: pngCount, document: document, annotations: annotations)
+        XCTAssertGreaterThanOrEqual(projected, encoded.count)
+        XCTAssertLessThan(projected, CaptureProjectStore.maximumBytes)
+    }
+
     private func assertColor(_ actual: NSColor, equals expected: NSColor, file: StaticString = #filePath, line: UInt = #line) {
         let a = actual.usingColorSpace(.sRGB)!, b = expected.usingColorSpace(.sRGB)!
         XCTAssertEqual(a.redComponent, b.redComponent, accuracy: 0.01, file: file, line: line)

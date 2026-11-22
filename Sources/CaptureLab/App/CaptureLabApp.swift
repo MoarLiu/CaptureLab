@@ -63,7 +63,7 @@ struct CaptureLabApp: App {
         CaptureLabAppDelegate.allowNextMainWindowPresentation()
         NSApp.setActivationPolicy(.regular)
         openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
     private func configureApplication() {
         guard !configured else { return }
@@ -72,6 +72,11 @@ struct CaptureLabApp: App {
         model.presentRecognition = { showUtilityWindow("recognition-results") }
         model.presentCaptureLauncher = { showUtilityWindow("capture-launcher") }
         model.presentUploadSettings = { showSettings(.upload) }
+        CapturePinController.shared.actions = .init(
+            openInEditor: { image, _ in model.openPinnedImage(image) },
+            recognize: { model.recognizePinnedImage($0) },
+            upload: { model.uploadPinnedImage($0, title: $1) }
+        )
         for action in CaptureAction.allCases {
             _ = registerGlobalHotKey(action, shortcutStore.shortcut(for: action))
         }
@@ -83,7 +88,7 @@ struct CaptureLabApp: App {
     private func showUtilityWindow(_ id: String) {
         NSApp.setActivationPolicy(.regular)
         openWindow(id: id)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
     private func showHistory() {
         model.refreshHistory()

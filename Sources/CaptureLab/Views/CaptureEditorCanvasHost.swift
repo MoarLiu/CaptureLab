@@ -35,6 +35,25 @@ struct CaptureEditorCanvasHost: View {
                     captureAction: model.captureRegion, openAction: model.openImage)
             }
         }
+        .overlay(alignment: .top) {
+            if model.showsOutputPreview {
+                Button {
+                    model.showsOutputPreview = false
+                } label: {
+                    Label(L10n.text(en: "Previewing result · Return to Editing", zh: "正在预览成品 · 返回编辑"),
+                          systemImage: "arrow.uturn.backward")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(Color.primary.opacity(0.12)))
+                        .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 16)
+                .help(L10n.text(en: "Return to Editing", zh: "返回编辑"))
+            }
+        }
         .alert(L10n.imageOpenFailedTitle, isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button(L10n.ok, role: .cancel) { error = nil }
         } message: { Text(error ?? "") }

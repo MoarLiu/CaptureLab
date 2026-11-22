@@ -52,7 +52,7 @@ struct CaptureImageAdjustmentView: View {
                     Text("px")
                 }
                 Toggle(L10n.text(en: "Keep aspect ratio", zh: "保持比例"), isOn: $keepRatio)
-                    .onChange(of: keepRatio) { value in if value { height = (width / ratio).rounded() } }
+                    .onChange(of: keepRatio) { _, value in if value { height = (width / ratio).rounded() } }
             }
             if isCrop {
                 Text(L10n.text(en: "Dimensions use canvas pixels before output scaling. Move the selection, then apply the crop.", zh: "尺寸使用输出缩放前的画布像素。设置后可移动选区，再应用裁剪。"))

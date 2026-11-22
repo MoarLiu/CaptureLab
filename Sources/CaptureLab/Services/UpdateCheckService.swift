@@ -259,7 +259,7 @@ enum UpdateCheckError: LocalizedError {
 }
 
 enum UpdateSigningIdentity {
-    static let publicKeyBase64 = "jBXKIXZ5O9KxP1YiHixdKc2BzzxLpUoTdRWdM1fjMLE="
+    static let publicKeyBase64 = "3eFuA6mLFF0Z3NqiXkqAI74cKyDaD6z9O4GqRviCzlw="
 
     static var publicKeyRawRepresentation: Data {
         guard let data = Data(base64Encoded: publicKeyBase64), data.count == 32 else {

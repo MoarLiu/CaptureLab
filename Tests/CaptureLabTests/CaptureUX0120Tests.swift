@@ -330,7 +330,7 @@ final class CaptureUX0120Tests: XCTestCase {
         controller.start(image: image, kind: .qrCode)
         try await render("results")
         XCTAssertEqual(controller.results, ["https://example.invalid/qr"])
-        XCTAssertEqual(pasteboard.string(forType: .string), "unchanged", "QR results require an explicit copy action.")
+        XCTAssertEqual(pasteboard.string(forType: .string), "https://example.invalid/qr", "The first QR result is copied automatically.")
     }
 
     private func renderNativeMenuIfRequested(_ menu: NSMenu) throws {

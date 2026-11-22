@@ -9,8 +9,7 @@ enum CaptureLayerComposition {
         guard (try? CaptureLayerImport.validate(layers)) != nil,
               let base = source.captureLabCGImage(),
               let output = render(source: base, layers: layers, image: { layer in
-                  guard let imageSource = CGImageSourceCreateWithData(layer.pngData as CFData, nil) else { return nil }
-                  return CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+                  CaptureLayerBitmapCache.shared.image(id: layer.id, data: layer.pngData)
               }) else { return nil }
         return NSImage(cgImage: output, size: source.size)
     }

@@ -80,9 +80,10 @@ final class UpdateAssetDownloader: NSObject, URLSessionDataDelegate, @unchecked 
             file = try FileHandle(forWritingTo: destinationURL)
             // Preserve the caller's transport configuration (including test
             // protocols), but never accumulate an asset in URLCache.
-            configuration.urlCache = nil
-            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-            let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+            let sessionConfiguration = (configuration.copy() as? URLSessionConfiguration) ?? .ephemeral
+            sessionConfiguration.urlCache = nil
+            sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            let session = URLSession(configuration: sessionConfiguration, delegate: self, delegateQueue: queue)
             self.session = session
             let task = session.dataTask(with: request)
             self.task = task

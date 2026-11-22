@@ -82,7 +82,7 @@ struct CaptureExportView: View {
             dimensionField(L10n.text(en: "Width", zh: "宽度"), isWidth: true)
             dimensionField(L10n.text(en: "Height", zh: "高度"), isWidth: false)
             Toggle(L10n.text(en: "Keep aspect ratio", zh: "保持比例"), isOn: $settings.keepAspectRatio)
-                .onChange(of: settings.keepAspectRatio) { value in
+                .onChange(of: settings.keepAspectRatio) { _, value in
                     if value { settings.matchAspectRatio(to: inputSize) }
                 }
             Button(L10n.text(en: "Use original size", zh: "使用原始尺寸")) { settings.width = nil; settings.height = nil }
@@ -109,7 +109,7 @@ struct CaptureExportView: View {
     }
     private func updatePreview() async {
         let requested = settings
-        encodedData = nil; encodedSettings = nil; encodedImage = nil; isEncoding = true; errorMessage = nil
+        encodedData = nil; encodedSettings = nil; isEncoding = true; errorMessage = nil
         guard let source = image.captureLabCGImage() else {
             errorMessage = CapturePresentationError.encodingFailed.localizedDescription; isEncoding = false; return
         }

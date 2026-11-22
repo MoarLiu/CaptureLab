@@ -5,7 +5,14 @@ import Combine
 final class CapturePinController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = CapturePinController()
 
+    struct Actions {
+        var openInEditor: ((NSImage, String) -> Void)?
+        var recognize: ((NSImage) -> Void)?
+        var upload: ((NSImage, String) -> Void)?
+    }
+
     @Published private(set) var windows: [NSWindow] = []
+    var actions = Actions()
 
     func pin(image: NSImage, title: String) {
         let snapshot: NSImage
@@ -14,7 +21,7 @@ final class CapturePinController: NSObject, NSWindowDelegate, ObservableObject {
         } else {
             snapshot = (image.copy() as? NSImage) ?? image
         }
-        let window = CapturePinWindow(image: snapshot, title: title)
+        let window = CapturePinWindow(image: snapshot, title: title, actions: actions)
         window.delegate = self
         windows.append(window)
         window.center()
@@ -44,9 +51,13 @@ final class CapturePinWindow: NSWindow {
     private let opacityValueLabel = NSTextField(labelWithString: "100%")
     private let imageView = NSImageView()
     private var lockButton: NSButton?
+    private let naturalContentSize: CGSize
+    private let actions: CapturePinController.Actions
 
-    init(image: NSImage, title: String) {
+    init(image: NSImage, title: String, actions: CapturePinController.Actions) {
         let size = Self.initialContentSize(for: image.size)
+        naturalContentSize = size
+        self.actions = actions
         super.init(
             contentRect: CGRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -62,6 +73,9 @@ final class CapturePinWindow: NSWindow {
         minSize = CGSize(width: 260, height: 160)
         isOpaque = false
         backgroundColor = .clear
+        if image.size.width > 0, image.size.height > 0 {
+            contentAspectRatio = image.size
+        }
 
         let root = NSView()
         root.toolTip = L10n.pinWindowHelp
@@ -177,9 +191,97 @@ final class CapturePinWindow: NSWindow {
         return true
     }
 
+    override func scrollWheel(with event: NSEvent) {
+        guard !ignoresMouseEvents, contentAspectRatio.width > 0, contentAspectRatio.height > 0 else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 10
+        guard abs(delta) > 0.01 else { return }
+        resizeContent(by: max(0.85, min(1.15, 1 + delta / 500)))
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard !ignoresMouseEvents else { return }
+        resizeContent(by: max(0.85, min(1.15, 1 + event.magnification)))
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let view = contentView else { return }
+        NSMenu.popUpContextMenu(pinMenu(), with: event, for: view)
+    }
+
     @objc private func changeOpacity(_ sender: NSSlider) {
         imageView.alphaValue = sender.doubleValue
         opacityValueLabel.stringValue = "\(Int((sender.doubleValue * 100).rounded()))%"
+    }
+
+    @objc private func copyPin() {
+        guard let image = imageView.image else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+    }
+
+    @objc private func savePin() {
+        guard let image = imageView.image, let data = image.captureLabPNGData() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = title.isEmpty ? "CaptureLab.png" : title + ".png"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    @objc private func openPinInEditor() {
+        guard let image = imageView.image else { return }
+        actions.openInEditor?(image, title)
+    }
+
+    @objc private func recognizePin() {
+        guard let image = imageView.image else { return }
+        actions.recognize?(image)
+    }
+
+    @objc private func uploadPin() {
+        guard let image = imageView.image else { return }
+        actions.upload?(image, title)
+    }
+
+    @objc private func resetPinScale() {
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        setContentSize(naturalContentSize)
+        setFrameOrigin(NSPoint(x: center.x - frame.width / 2, y: center.y - frame.height / 2))
+    }
+
+    private func resizeContent(by factor: CGFloat) {
+        let ratio = contentAspectRatio
+        guard ratio.width > 0, ratio.height > 0 else { return }
+        var content = contentRect(forFrameRect: frame).size
+        content.width = min(4_000, max(120, content.width * factor))
+        content.height = content.width * ratio.height / ratio.width
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        let next = frameRect(forContentRect: NSRect(origin: .zero, size: content))
+        setFrame(NSRect(x: center.x - next.width / 2, y: center.y - next.height / 2, width: next.width, height: next.height), display: true)
+    }
+
+    private func pinMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: L10n.copyEditedImage, action: #selector(copyPin), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L10n.saveEditedImage, action: #selector(savePin), keyEquivalent: ""))
+        if actions.openInEditor != nil {
+            menu.addItem(NSMenuItem(title: L10n.openRecentCapture, action: #selector(openPinInEditor), keyEquivalent: ""))
+        }
+        if actions.recognize != nil {
+            menu.addItem(NSMenuItem(title: L10n.text(en: "Recognize Text", zh: "识别文字"), action: #selector(recognizePin), keyEquivalent: ""))
+        }
+        if actions.upload != nil {
+            menu.addItem(NSMenuItem(title: L10n.uploadEditedImage, action: #selector(uploadPin), keyEquivalent: ""))
+        }
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: L10n.text(en: "Reset to 100%", zh: "重置为 100%"), action: #selector(resetPinScale), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L10n.pinClose, action: #selector(closePin(_:)), keyEquivalent: ""))
+        menu.items.forEach { $0.target = self }
+        return menu
     }
 
     @objc private func closePin(_ sender: Any?) {

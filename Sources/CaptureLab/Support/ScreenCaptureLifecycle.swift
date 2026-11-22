@@ -55,6 +55,12 @@ final class ScreenCaptureProcessRegistry: @unchecked Sendable {
         // Track even a launch that lost the shutdown race. Its caller will
         // terminate it immediately, while shutdown can still wait for it.
         processes[ObjectIdentifier(process)] = process
+        process.terminationHandler = { [weak self] _ in
+            guard let self else { return }
+            self.condition.lock()
+            self.condition.broadcast()
+            self.condition.unlock()
+        }
         condition.broadcast()
         condition.unlock()
         return accepted
@@ -121,32 +127,26 @@ final class ScreenCaptureProcessRegistry: @unchecked Sendable {
 
     private func waitForRegistryToStop(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(max(0, timeout))
-        repeat {
-            condition.lock()
-            let pending = pendingLaunchCount
-            let snapshot = Array(processes.values)
-            condition.unlock()
-            if pending == 0, snapshot.allSatisfy({ !$0.isRunning }) {
+        condition.lock()
+        defer { condition.unlock() }
+        while true {
+            if pendingLaunchCount == 0, processes.values.allSatisfy({ !$0.isRunning }) {
                 return true
             }
-            if Date() >= deadline {
-                return false
-            }
-            Thread.sleep(forTimeInterval: 0.01)
-        } while true
+            if Date() >= deadline { return false }
+            condition.wait(until: deadline)
+        }
     }
 
     private func waitForProcessesToStop(_ processes: [Process], timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(max(0, timeout))
-        repeat {
-            if processes.allSatisfy({ !$0.isRunning }) {
-                return true
-            }
-            if Date() >= deadline {
-                return false
-            }
-            Thread.sleep(forTimeInterval: 0.01)
-        } while true
+        condition.lock()
+        defer { condition.unlock() }
+        while true {
+            if processes.allSatisfy({ !$0.isRunning }) { return true }
+            if Date() >= deadline { return false }
+            condition.wait(until: deadline)
+        }
     }
 }
 

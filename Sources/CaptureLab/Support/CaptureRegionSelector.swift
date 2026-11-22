@@ -161,7 +161,7 @@ final class CaptureRegionSelector {
                 observer = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor in self?.complete(.failure(CaptureLabError.captureFailed(L10n.invalidLastRegion))) }
                 }
-                NSApp.activate(ignoringOtherApps: true)
+                NSApp.activate()
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.complete(.failure(CancellationError())) }
@@ -264,7 +264,7 @@ final class RegionSelectionView: NSView {
             } else if let window {
                 let mainTop = NSScreen.screens.first?.frame.maxY ?? 0
                 let quartz = CGRect(x: sample.minX, y: mainTop - sample.maxY, width: 24, height: 24)
-                magnifier = CGWindowListCreateImage(quartz, .optionOnScreenBelowWindow, CGWindowID(window.windowNumber), [.bestResolution])
+                magnifier = LegacyWindowImage.belowWindow(CGWindowID(window.windowNumber), rect: quartz)
             }
         }
         state.didChange?()
@@ -339,8 +339,25 @@ private struct RegionOptionsView: View {
         }
         .padding(14)
         .background(.regularMaterial)
-        .onChange(of: state.ratio) { _ in if state.rect.hasPositiveArea { state.applySize() } }
-        .onChange(of: state.showsGuides) { _ in state.didChange?() }
-        .onChange(of: state.showsMagnifier) { _ in state.didChange?() }
+        .onChange(of: state.ratio) { if state.rect.hasPositiveArea { state.applySize() } }
+        .onChange(of: state.showsGuides) { state.didChange?() }
+        .onChange(of: state.showsMagnifier) { state.didChange?() }
+    }
+}
+
+/// Live magnifier sampling still uses the pre-ScreenCaptureKit capture call.
+/// The symbol is resolved manually so the macOS 14 deprecation does not fail
+/// `-warnings-as-errors` before the capture pipeline moves to SCScreenshotManager.
+private enum LegacyWindowImage {
+    private typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+    private static let create: CreateImage? = {
+        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { return nil }
+        return unsafeBitCast(symbol, to: CreateImage.self)
+    }()
+
+    static func belowWindow(_ windowID: CGWindowID, rect: CGRect) -> CGImage? {
+        let list = CGWindowListOption.optionOnScreenBelowWindow.rawValue
+        let quality = CGWindowImageOption.bestResolution.rawValue
+        return create?(rect, list, windowID, quality)?.takeRetainedValue()
     }
 }

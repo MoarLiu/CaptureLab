@@ -55,7 +55,7 @@ struct CaptureSettingsView: View {
             else { NSApp.keyWindow?.performClose(nil) }
         })
         .onDisappear { session.recordingAction = nil }
-        .onChange(of: workflow.options) { model.overlayController.updateOptions($0) }
+        .onChange(of: workflow.options) { _, options in model.overlayController.updateOptions(options) }
     }
     private func sidebarButton(_ category: CaptureSettingsSection) -> some View {
         Button { session.navigate(to: category) } label: {
@@ -86,10 +86,10 @@ struct CaptureSettingsView: View {
         .allowsHitTesting(session.section == category)
         .disabled(session.section != category)
         .accessibilityHidden(session.section != category)
-        .onChange(of: session.focusedShortcut) { action in
+        .onChange(of: session.focusedShortcut) { _, action in
             if category == .shortcuts, let action { proxy.scrollTo(action, anchor: .center) }
         }
-        .onChange(of: session.section) { target in
+        .onChange(of: session.section) { _, target in
             if category == .shortcuts, target == category, let action = session.focusedShortcut { proxy.scrollTo(action, anchor: .center) }
         }
         }
@@ -148,6 +148,9 @@ private struct CaptureGeneralSettingsPage: View {
         workflow = model.workflowSettings; history = model.historyStore
     }
     var body: some View {
+        CaptureSettingsGroup(title: L10n.text(en: "Startup", zh: "启动")) {
+            CaptureLoginItemRow()
+        }
         CaptureSettingsGroup(title: L10n.text(en: "After Capture", zh: "截图完成后")) {
             CaptureSettingsRow(title: L10n.text(en: "Default action", zh: "默认操作"),
                                detail: L10n.text(en: "Screenshots are always copied and kept in history.", zh: "截图会自动复制，并保存在历史中。")) {
@@ -201,8 +204,8 @@ private struct CaptureGeneralSettingsPage: View {
             if let error = recognition.error { CaptureSettingsNote(text: error, isError: true).padding(16) }
         }
         .onAppear { model.refreshHistory(); session.synchronizeRetention(history.retention) }
-        .onChange(of: history.retention) { session.synchronizeRetention($0) }
-        .onChange(of: session.retention) { _ in message = nil }
+        .onChange(of: history.retention) { _, retention in session.synchronizeRetention(retention) }
+        .onChange(of: session.retention) { message = nil }
     }
     private var languageChoice: String {
         if customLanguages { return "custom" }
@@ -317,6 +320,10 @@ struct CaptureUploadSettingsPage: View {
         if let message = draft.message { CaptureSettingsNote(text: message, isError: draft.failed) }
         HStack {
             CaptureSettingsNote(text: L10n.text(en: "The secret is stored securely in Keychain.", zh: "密钥安全保存在系统钥匙串中。"))
+            Button(L10n.text(en: "Test Connection", zh: "测试连接")) { Task { await draft.testConnection() } }
+                .disabled(draft.isTestingConnection || !draft.canSave)
+            Button(L10n.text(en: "Clear Settings", zh: "清除配置")) { draft.clear() }
+                .disabled(!draft.isConfigured && !draft.isDirty)
             Button(L10n.save) { draft.save() }.buttonStyle(.borderedProminent)
                 .disabled(!draft.isDirty || !draft.canSave)
                 .help(draft.saveGuidance).accessibilityHint(draft.saveGuidance)
@@ -362,5 +369,33 @@ private struct CaptureAboutSettingsPage: View {
         if model.isCheckingForUpdates { return L10n.checkingForUpdates }
         if !model.canCheckForUpdates { return L10n.text(en: "An update installation is pending. Finish the current screenshot to continue.", zh: "更新安装正在等待，当前截图完成后将继续。") }
         return L10n.text(en: "Check for a newer CaptureLab version.", zh: "检查 CaptureLab 是否有新版本。")
+    }
+}
+
+private struct CaptureLoginItemRow: View {
+    @State private var enabled = CaptureLoginItem.isEnabled
+    @State private var message: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(L10n.text(en: "Launch CaptureLab at login", zh: "登录时启动 CaptureLab"), isOn: Binding(
+                get: { enabled },
+                set: { update($0) }
+            ))
+            .padding(16)
+            if let message { CaptureSettingsNote(text: message, isError: true).padding(.horizontal, 16).padding(.bottom, 12) }
+        }
+    }
+    private func update(_ value: Bool) {
+        do {
+            try CaptureLoginItem.setEnabled(value)
+            enabled = CaptureLoginItem.isEnabled
+            message = enabled || !value ? nil : L10n.text(
+                en: "macOS still needs approval in System Settings > General > Login Items.",
+                zh: "macOS 仍需要在“系统设置 > 通用 > 登录项”中允许 CaptureLab。"
+            )
+        } catch {
+            enabled = CaptureLoginItem.isEnabled
+            message = error.localizedDescription
+        }
     }
 }

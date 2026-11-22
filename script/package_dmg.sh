@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="CaptureLab"
 SWAP_HELPER_NAME="CaptureLabUpdateSwap"
-UPDATE_SIGNING_PUBLIC_KEY="jBXKIXZ5O9KxP1YiHixdKc2BzzxLpUoTdRWdM1fjMLE="
+UPDATE_SIGNING_PUBLIC_KEY="3eFuA6mLFF0Z3NqiXkqAI74cKyDaD6z9O4GqRviCzlw="
 LOCAL_CODE_SIGNING_IDENTITY_SHA1="636F51D5E5F9240F862327A82C3863C2F5EE7DFF"
 LOCAL_CODE_SIGNING_CERTIFICATE_SHA1="636f51d5e5f9240f862327a82c3863c2f5ee7dff"
 
@@ -104,8 +104,8 @@ if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
   export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 fi
 
-swift build --package-path "$ROOT_DIR" --configuration release --triple "$SWIFT_TRIPLE" --product "$APP_NAME"
-swift build --package-path "$ROOT_DIR" --configuration release --triple "$SWIFT_TRIPLE" --product "$SWAP_HELPER_NAME"
+swift build --package-path "$ROOT_DIR" --configuration release --triple "$SWIFT_TRIPLE" --product "$APP_NAME" -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+swift build --package-path "$ROOT_DIR" --configuration release --triple "$SWIFT_TRIPLE" --product "$SWAP_HELPER_NAME" -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 BUILD_BIN_DIR="$(swift build --package-path "$ROOT_DIR" --configuration release --triple "$SWIFT_TRIPLE" --show-bin-path)"
 BUILD_BINARY="$BUILD_BIN_DIR/$APP_NAME"
 BUILD_SWAP_HELPER="$BUILD_BIN_DIR/$SWAP_HELPER_NAME"
@@ -170,6 +170,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>public.app-category.productivity</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>CaptureLab needs screen recording permission to capture the screen, a window, or a selected area.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSPrincipalClass</key>

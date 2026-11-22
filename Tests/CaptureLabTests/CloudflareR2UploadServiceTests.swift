@@ -75,6 +75,39 @@ final class CloudflareR2UploadServiceTests: XCTestCase {
         XCTAssertEqual(capturedRequest?.httpMethod, "PUT")
     }
 
+    func testCancellationIsNotReportedAsAnUploadFailure() async {
+        let service = CloudflareR2UploadService(transport: { _, _ in throw CancellationError() })
+        do {
+            _ = try await service.upload(CloudflareR2UploadRequest(
+                settings: settings, data: Data("png".utf8), fileName: "capture.png", contentType: "image/png"
+            ))
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Wrapped cancellation: \(error)")
+        }
+    }
+
+    func testRetrySignsTheRequestAgain() async throws {
+        var dates: [String] = []
+        var now = Date(timeIntervalSince1970: 1_783_036_800)
+        let service = CloudflareR2UploadService(
+            now: { now },
+            uuid: { UUID(uuidString: "00000000-0000-0000-0000-000000000003")! },
+            transport: { request, _ in
+                dates.append(request.value(forHTTPHeaderField: "x-amz-date") ?? "")
+                now = now.addingTimeInterval(30)
+                let status = dates.count == 1 ? 500 : 200
+                return (Data(), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+            }
+        )
+        _ = try await service.upload(CloudflareR2UploadRequest(
+            settings: settings, data: Data("png".utf8), fileName: "capture.png", contentType: "image/png"
+        ))
+        XCTAssertEqual(dates.count, 2)
+        XCTAssertNotEqual(dates[0], dates[1])
+    }
+
     private var settings: CloudflareR2Settings {
         CloudflareR2Settings(
             endpoint: "https://account.r2.cloudflarestorage.com",

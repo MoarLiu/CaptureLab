@@ -45,6 +45,7 @@ final class CaptureR2SettingsDraft: ObservableObject {
     @Published var secretAccessKey = ""
     @Published private(set) var message: String?
     @Published private(set) var failed = false
+    @Published private(set) var isTestingConnection = false
     private let store: CloudflareR2SettingsStore
     private var baseline: CloudflareR2SettingsInput?
 
@@ -98,6 +99,38 @@ final class CaptureR2SettingsDraft: ObservableObject {
         } catch {
             failed = true; message = error.localizedDescription
             return false
+        }
+    }
+
+    func clear() {
+        do {
+            try store.clear()
+            reload()
+            failed = false
+            message = L10n.text(en: "Upload settings cleared.", zh: "已清除上传配置。")
+        } catch {
+            failed = true
+            message = error.localizedDescription
+        }
+    }
+
+    func testConnection() async {
+        guard !isTestingConnection else { return }
+        isTestingConnection = true
+        defer { isTestingConnection = false }
+        do {
+            let secret = secretAccessKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && canReuseStoredSecret
+                ? (store.settings?.secretAccessKey ?? "") : secretAccessKey
+            let settings = try CloudflareR2Settings(
+                endpoint: endpoint, bucket: bucket, pathPrefix: pathPrefix, publicBaseURL: publicBaseURL,
+                accessKeyID: accessKeyID, secretAccessKey: secret
+            ).normalized()
+            try await CloudflareR2UploadService().probe(settings)
+            failed = false
+            message = L10n.text(en: "Connection succeeded.", zh: "连接成功。")
+        } catch {
+            failed = true
+            message = error.localizedDescription
         }
     }
 }

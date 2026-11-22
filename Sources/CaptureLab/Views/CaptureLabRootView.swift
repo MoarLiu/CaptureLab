@@ -67,13 +67,13 @@ struct CaptureLabRootView: View {
         .background(CaptureWindowReader(window: $window))
         .background(CaptureDocumentCloseGuard(model: model))
         .onAppear { showsLayers = model.isEditingObjects && model.hasImage }
-        .onChange(of: model.isEditingObjects) { active in
+        .onChange(of: model.isEditingObjects) { _, active in
             showsLayers = active
         }
-        .onChange(of: model.selectedTool) { tool in
+        .onChange(of: model.selectedTool) { _, tool in
             if tool != .select { showsLayers = false }
         }
-        .onChange(of: model.successFeedback) { feedback in
+        .onChange(of: model.successFeedback) { _, feedback in
             if let feedback { showToast(feedback.message) }
         }
         .sheet(item: $model.exportRequest) { request in
@@ -177,9 +177,15 @@ private struct EditorTopBarView: View {
     let showHistory: () -> Void
     @State private var showSize = false
     @State private var showAdvancedStyle = false
-    @State private var showPresentation = false
-    @State private var presentationSource: NSImage?
-    @State private var presentationDocumentID: UUID?
+    @State private var presentationRequest: PresentationRequest?
+
+    private struct PresentationRequest: Identifiable {
+        let id = UUID()
+        let image: NSImage
+        let documentID: UUID
+        let presentation: CapturePresentation
+        let sourceSize: CGSize
+    }
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -192,17 +198,15 @@ private struct EditorTopBarView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .background(CaptureWindowDragRegion())
         .sheet(isPresented: $showSize) { CaptureImageAdjustmentView(model: model) }
-        .sheet(isPresented: $showPresentation) {
-            if let document = model.document {
-                CapturePresentationView(presentation: .constant(document.presentation), sourceSize: document.pixelSize,
-                    sourceImage: presentationSource, onApply: { presentation in
-                        guard model.document?.id == presentationDocumentID else { return }
-                        model.applyPresentation(presentation)
-                    })
-            }
+        .sheet(item: $presentationRequest) { request in
+            CapturePresentationView(presentation: .constant(request.presentation), sourceSize: request.sourceSize,
+                sourceImage: request.image, onApply: { presentation in
+                    guard model.document?.id == request.documentID else { return }
+                    model.applyPresentation(presentation)
+                })
         }
-        .onChange(of: model.document?.id) { id in
-            if showPresentation, id != presentationDocumentID { showPresentation = false }
+        .onChange(of: model.document?.id) { _, id in
+            if let request = presentationRequest, id != request.documentID { presentationRequest = nil }
         }
     }
 
@@ -235,9 +239,13 @@ private struct EditorTopBarView: View {
                     if showsLayers { model.showsOutputPreview = false }
                 }.disabled(!model.hasImage).accessibilityAddTraits(showsLayers ? [.isSelected] : [])
                 ToolbarIconButton(systemImage: "photo.artframe", help: L10n.text(en: "Background and templates", zh: "背景与模板"), isPrimary: false) {
-                    presentationSource = model.renderedContentImage()
-                    presentationDocumentID = model.document?.id
-                    showPresentation = presentationSource != nil
+                    guard let document = model.document, let image = model.renderedContentImage() else { return }
+                    presentationRequest = PresentationRequest(
+                        image: image,
+                        documentID: document.id,
+                        presentation: document.presentation,
+                        sourceSize: document.pixelSize
+                    )
                 }.disabled(!model.hasImage)
                 if includesSecondaryActions {
                     OCRToolbarButton(model: model, isPresented: $isOCRPopoverPresented)
@@ -371,7 +379,7 @@ private struct EditorOptionsBarView: View {
                 }
                 Button(L10n.text(en: "Exact Size…", zh: "精确尺寸…")) { showCropSize = true }
             }
-            .onChange(of: model.cropPreset) { _ in model.constrainCropSelection() }
+            .onChange(of: model.cropPreset) { model.constrainCropSelection() }
             .sheet(isPresented: $showCropSize) { CaptureImageAdjustmentView(model: model, isCrop: true) }
             Button(L10n.cropApply) { _ = model.applyCrop() }
                 .disabled(!model.canApplyCrop)
@@ -449,30 +457,6 @@ private struct CaptureWindowReader: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
             window = nsView.window
-        }
-    }
-}
-
-private struct DocumentToolbarStatusView: View {
-    @ObservedObject var model: CaptureLabViewModel
-
-    var body: some View {
-        HStack(spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: model.hasImage ? "photo" : "viewfinder")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-
-                Text(model.hasImage ? model.documentTitle : L10n.appName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(.primary)
-            }
-            .padding(.horizontal, 12)
-            .frame(width: 190, height: 28)
-            .background(Color.white.opacity(0.76), in: Capsule())
-            .help(model.hasImage ? model.documentTitle : L10n.appName)
         }
     }
 }

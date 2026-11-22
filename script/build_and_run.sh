@@ -96,6 +96,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>public.app-category.productivity</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>CaptureLab needs screen recording permission to capture the screen, a window, or a selected area.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSPrincipalClass</key>

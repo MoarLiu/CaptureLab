@@ -14,7 +14,7 @@ struct ShortcutSettingsView: View {
             group(L10n.text(en: "Capture", zh: "截图"), actions: [.region, .window, .fullScreen, .lastRegion, .delayedRegion, .launcher])
             group(L10n.text(en: "Text & QR Codes", zh: "文字与二维码"), actions: [.text, .qrCode])
         }
-        .onChange(of: session.recordingAction) { action in
+        .onChange(of: session.recordingAction) { _, action in
             controller.recordShortcut = action.map { target in { value in
                 guard session.recordingAction == target, session.section == .shortcuts else { return }
                 save(value, for: target)

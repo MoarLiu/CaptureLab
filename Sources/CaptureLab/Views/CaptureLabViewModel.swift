@@ -80,7 +80,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
     private var highlightRecognitionTask: Task<Void, Never>?
     private var highlightRecognitionID = UUID()
-    private var canvasSourceCache: (id: UUID, image: NSImage)?
+    private var canvasSourceCache: (id: UUID, image: NSImage?)?
     private let outputPreviewRenderer = CaptureCompositionPreviewRenderer()
 
     @Published var annotations: [CaptureAnnotation] = [] {
@@ -174,6 +174,7 @@ final class CaptureLabViewModel: ObservableObject {
     private var isSynchronizingAppearance = false
     private var isApplyingAnnotationHistory = false
     private let maxUndoDepth = 60
+    private var annotationCoalesceDeadline: Date?
     private var documentGeneration: UInt64 = 0
     private var ocrRequestID: UUID?
     private var ocrTask: Task<Void, Never>?
@@ -399,12 +400,13 @@ final class CaptureLabViewModel: ObservableObject {
         guard var preview = document else { return nil }
         guard !preview.imageLayers.isEmpty else { return preview }
         if canvasSourceCache?.id != preview.id {
-            guard let image = CaptureLayerComposition.render(source: preview.image, layers: preview.imageLayers) else { return nil }
-            canvasSourceCache = (preview.id, image)
+            canvasSourceCache = (preview.id, CaptureLayerComposition.render(source: preview.image, layers: preview.imageLayers))
         }
-        guard let image = canvasSourceCache?.image else { return nil }
-        preview.image = image
-        preview.imageLayers = []
+        // A failed composition must not pretend the document disappeared.
+        if let image = canvasSourceCache?.image {
+            preview.image = image
+            preview.imageLayers = []
+        }
         return preview
     }
 
@@ -439,9 +441,9 @@ final class CaptureLabViewModel: ObservableObject {
 
     private func canStoreProject(_ document: CaptureDocument, annotations: [CaptureAnnotation]) -> Bool {
         do {
-            // The actual encoder accounts for base pixels, added images, even
-            // inactive custom backgrounds, JSON/Base64 overhead and annotations.
-            _ = try CaptureProjectStore.encode(document: document, annotations: annotations)
+            // Reject an oversized composition before creating an undo unit.
+            // The byte budget covers Base64 overhead without encoding the file.
+            try CaptureProjectStore.fitsEncodedBudget(document: document, annotations: annotations)
             return true
         } catch {
             reportFailure(error.localizedDescription, title: L10n.imageOpenFailedTitle)
@@ -474,8 +476,13 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     func prepareExport() {
-        guard let snapshot = renderedSnapshot(), let image = snapshot.image else { return }
-        exportRequest = ExportRequest(image: image, fileName: snapshot.fileName)
+        CaptureEditingSession.commitPendingTextEdits()
+        guard let document else { return }
+        guard let image = renderImage(document: document) else {
+            reportFailure(CaptureLabError.imageExportFailed.localizedDescription, title: L10n.imageSaveFailedTitle)
+            return
+        }
+        exportRequest = ExportRequest(image: image, fileName: defaultSaveName(for: document))
     }
 
     func recognizeHighlightRegions() {
@@ -803,6 +810,20 @@ final class CaptureLabViewModel: ObservableObject {
         guard let image = snapshot.image else { return }
         pinOperation(image, snapshot.fileName)
     }
+    func openPinnedImage(_ image: NSImage) {
+        guard let data = image.captureLabPNGData(), importImageData(data) else { return }
+        presentEditor?()
+    }
+    func recognizePinnedImage(_ image: NSImage) {
+        guard let image = image.captureLabCGImage() else { return }
+        directRecognition.start(image: image, kind: .text)
+        presentRecognition?()
+    }
+    func uploadPinnedImage(_ image: NSImage, title: String) {
+        guard let data = image.captureLabPNGData() else { return }
+        let fileName = title.isEmpty ? "CaptureLab.png" : title
+        uploadPNGData(data, fileName: fileName)
+    }
     func uploadSnapshot(_ snapshot: CaptureImageSnapshot) {
         uploadPNGData(snapshot.data, fileName: snapshot.fileName)
     }
@@ -848,6 +869,7 @@ final class CaptureLabViewModel: ObservableObject {
                 let png = try CaptureImageImport.pngData(from: first.data)
                 guard let image = NSImage(data: png) else { throw CaptureLayerError.invalidImage }
                 target = CaptureDocument(image: image, sourceURL: nil, createdAt: Date())
+                target.sourcePNGByteCount = png.count
             }
             var layers = target.imageLayers
             var added: [CaptureImageLayer] = []
@@ -904,6 +926,7 @@ final class CaptureLabViewModel: ObservableObject {
                 let data = try CaptureImageImport.data(from: first)
                 guard let image = NSImage(data: data) else { throw CaptureLayerError.invalidImage }
                 var imported = CaptureDocument(image: image, sourceURL: nil, createdAt: Date())
+                imported.sourcePNGByteCount = data.count
                 if panel.urls.count > 1 {
                     imported.imageLayers = try CaptureLayerImport.layers(from: Array(panel.urls.dropFirst()),
                         canvasSize: imported.sourcePixelSize, existing: [])
@@ -1408,7 +1431,6 @@ final class CaptureLabViewModel: ObservableObject {
         isApplyingAnnotationHistory = false
         selectedAnnotationID = nil
         cropSelection = nil
-        selectedTool = .select
         if sourceChanged {
             ocrText = ""
         }
@@ -1458,7 +1480,9 @@ final class CaptureLabViewModel: ObservableObject {
         guard !preserveExisting || preserveDocumentBeforeReplacement() else { return false }
         importRequestID = UUID()
         invalidateDocumentActivities()
-        document = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: Date())
+        var loaded = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: Date())
+        loaded.sourcePNGByteCount = png.count
+        document = loaded
         currentHistoryItem = nil
         finishEditingError = nil
         resetAnnotations()
@@ -1501,9 +1525,36 @@ final class CaptureLabViewModel: ObservableObject {
         else {
             return
         }
-
+        if coalesceAnnotationChange(from: oldValue, to: newValue) {
+            annotationRedoStack.removeAll()
+            annotationCoalesceDeadline = Date().addingTimeInterval(0.4)
+            return
+        }
         appendUndo(EditSnapshot(document: document, annotations: oldValue))
         annotationRedoStack.removeAll()
+        annotationCoalesceDeadline = canCoalesceAnnotationChange(from: oldValue, to: newValue)
+            ? Date().addingTimeInterval(0.4) : nil
+    }
+
+    /// Slider, color, and key-repeat edits within a short window share one undo step.
+    private func coalesceAnnotationChange(from oldValue: [CaptureAnnotation], to newValue: [CaptureAnnotation]) -> Bool {
+        guard let deadline = annotationCoalesceDeadline, Date() < deadline, !annotationUndoStack.isEmpty else { return false }
+        return canCoalesceAnnotationChange(from: oldValue, to: newValue)
+    }
+
+    private func canCoalesceAnnotationChange(from oldValue: [CaptureAnnotation], to newValue: [CaptureAnnotation]) -> Bool {
+        guard oldValue.count == newValue.count, !oldValue.isEmpty else { return false }
+        var appearanceChanged = false
+        var geometryChanged = false
+        for (before, after) in zip(oldValue, newValue) {
+            guard before.id == after.id, before.kind == after.kind, before.text == after.text,
+                  before.normalizedPoints.count == after.normalizedPoints.count else { return false }
+            if before.appearance != after.appearance { appearanceChanged = true }
+            if before.normalizedRect != after.normalizedRect || before.normalizedPoints != after.normalizedPoints {
+                geometryChanged = true
+            }
+        }
+        return appearanceChanged != geometryChanged
     }
 
     private func appendUndo(_ snapshot: EditSnapshot) {
@@ -1607,7 +1658,7 @@ final class CaptureLabViewModel: ObservableObject {
     }
 
     static var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.12.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.13.0"
     }
 
     private static let uploadFileTimestampFormatter: DateFormatter = {

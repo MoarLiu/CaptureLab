@@ -97,6 +97,14 @@ struct CaptureHistoryView: View {
                 .frame(maxWidth: .infinity)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    CaptureImageDragSource(
+                        snapshot: { model.snapshot(for: item) },
+                        isEnabled: !model.isCapturing,
+                        chrome: .surface,
+                        onClick: { open(item) }
+                    )
+                }
             }
             .buttonStyle(.plain)
             .help(L10n.openRecentCapture)
@@ -202,19 +210,24 @@ private struct CaptureHistoryThumbnailView: View {
             }
         }
         .task(id: identity) {
+            let imageURL = identity.url
+            if let cached = CaptureHistoryThumbnailCache.shared.image(for: imageURL) {
+                thumbnail = NSImage(cgImage: cached, size: .zero)
+                isLoading = false
+                return
+            }
             thumbnail = nil
             isLoading = true
-            let imageURL = identity.url
-            let worker = Task.detached(priority: .utility) {
-                Self.thumbnailImage(at: imageURL)
-            }
-            let image = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
+            await CaptureHistoryThumbnailGate.shared.acquire()
+            let image = await Task.detached(priority: .utility) {
+                CaptureHistoryThumbnailCache.shared.image(for: imageURL) ?? CaptureHistoryThumbnailView.thumbnailImage(at: imageURL)
+            }.value
+            await CaptureHistoryThumbnailGate.shared.release()
             guard !Task.isCancelled else { return }
-            thumbnail = image.map { NSImage(cgImage: $0, size: .zero) }
+            if let image {
+                CaptureHistoryThumbnailCache.shared.store(image, for: imageURL)
+                thumbnail = NSImage(cgImage: image, size: .zero)
+            }
             isLoading = false
         }
     }
@@ -234,5 +247,40 @@ private struct CaptureHistoryThumbnailView: View {
             return nil
         }
         return image
+    }
+}
+
+final class CaptureHistoryThumbnailCache: @unchecked Sendable {
+    static let shared = CaptureHistoryThumbnailCache()
+    private final class Box: NSObject { let image: CGImage; init(_ image: CGImage) { self.image = image } }
+    private let cache: NSCache<NSURL, Box> = {
+        let cache = NSCache<NSURL, Box>()
+        cache.countLimit = 200
+        cache.totalCostLimit = 32 * 1_024 * 1_024
+        return cache
+    }()
+    func image(for url: URL) -> CGImage? { cache.object(forKey: url as NSURL)?.image }
+    func store(_ image: CGImage, for url: URL) {
+        cache.setObject(Box(image), forKey: url as NSURL, cost: max(1, image.width * image.height * 4))
+    }
+}
+
+actor CaptureHistoryThumbnailGate {
+    static let shared = CaptureHistoryThumbnailGate()
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func acquire() async {
+        if active < 4 {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() {
+        if waiters.isEmpty {
+            active = max(0, active - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
     }
 }

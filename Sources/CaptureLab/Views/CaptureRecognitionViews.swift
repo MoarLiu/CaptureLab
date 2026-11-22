@@ -83,9 +83,15 @@ struct DirectRecognitionView: View {
                 }
             } else {
                 Text(controller.message).foregroundStyle(.secondary)
-                List(controller.results, id: \.self, selection: $selected) { value in
-                    Text(value).lineLimit(8).textSelection(.enabled).tag(value)
-                }.frame(minHeight: 180)
+                if controller.lastKind == .qrCode {
+                    List(controller.results, id: \.self, selection: $selected) { value in
+                        Text(value).textSelection(.enabled).tag(value)
+                    }.frame(minHeight: 180)
+                } else {
+                    TextEditor(text: Binding(get: { controller.results.first ?? "" }, set: { _ in }))
+                        .font(.body).frame(minHeight: 180)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
+                }
             }
             HStack {
                 if controller.isRunning {
@@ -94,18 +100,31 @@ struct DirectRecognitionView: View {
                     selectionButton
                 }
                 Spacer()
-                Button(L10n.copyOCRText) { if let selected { controller.copy(selected) } }
+                Button(controller.lastKind == .qrCode
+                       ? L10n.text(en: "Copy Result", zh: "复制结果")
+                       : L10n.copyOCRText) { if let selected { controller.copy(selected) } }
                     .disabled(!canCopy).help(copyAvailability).accessibilityHint(copyAvailability)
+                if let link = browserLink {
+                    Button(L10n.text(en: "Open in Browser", zh: "在浏览器打开")) {
+                        NSWorkspace.shared.open(link)
+                    }
+                }
             }
         }.padding(24).frame(minWidth: 500, minHeight: 340)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onChange(of: controller.results) { selected = $0.first }
+        .onChange(of: controller.results) { _, results in selected = results.first }
         .onAppear { selected = controller.results.first }
         .onDisappear { controller.cancel() }
         .captureLabWindowCloseShortcuts()
     }
 
     private var canCopy: Bool { !controller.isRunning && selected.map(controller.results.contains) == true }
+    private var browserLink: URL? {
+        guard controller.lastKind == .qrCode, let selected,
+              let url = URL(string: selected),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
     private var copyAvailability: String {
         controller.isRunning
             ? L10n.text(en: "Copy will be available when recognition finishes.", zh: "识别完成后即可复制结果。")

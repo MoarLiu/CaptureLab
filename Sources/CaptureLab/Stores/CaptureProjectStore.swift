@@ -58,6 +58,47 @@ enum CaptureProjectStore {
         return data
     }
 
+    /// Upper bound for the encoded project. Interactive edits use this instead of
+    /// building and discarding a full Base64 JSON document on the main thread.
+    static func fitsEncodedBudget(document: CaptureDocument, annotations: [CaptureAnnotation]) throws {
+        try CaptureLayerImport.validate(document.imageLayers)
+        try document.presentation.validate()
+        guard document.presentation.outputSize(for: document.pixelSize) != nil else { throw CaptureProjectError.tooLarge }
+        guard document.geometry.isValid(sourceSize: document.sourcePixelSize),
+              validLogicalSize(document.image.size), document.createdAt.timeIntervalSinceReferenceDate.isFinite,
+              validAnnotations(annotations) else { throw CaptureProjectError.invalid }
+        let sourceBytes = document.sourcePNGByteCount ?? maximumEncodedPNGBytes(pixelSize: document.sourcePixelSize)
+        guard sourceBytes <= CaptureImageImport.maximumBytes else { throw CaptureProjectError.tooLarge }
+        guard projectedEncodedBytes(sourcePNGCount: sourceBytes, document: document, annotations: annotations) <= maximumBytes else {
+            throw CaptureProjectError.tooLarge
+        }
+    }
+
+    /// Uncompressed PNG scanlines plus stored-block overhead. This is an upper
+    /// bound, so interactive checks never encode the source bitmap.
+    static func maximumEncodedPNGBytes(pixelSize: CGSize) -> Int {
+        let width = max(1, Int(pixelSize.width.rounded()))
+        let height = max(1, Int(pixelSize.height.rounded()))
+        let raw = (width * 4 + 1) * height
+        let storedOverhead = (raw / 16_383 + 1) * 5
+        return raw + storedOverhead + 1_024
+    }
+
+    static func projectedEncodedBytes(sourcePNGCount: Int, document: CaptureDocument, annotations: [CaptureAnnotation]) -> Int {
+        func base64Length(_ count: Int) -> Int { count <= 0 ? 0 : ((count + 2) / 3) * 4 }
+        var total = 8_192
+        total += base64Length(sourcePNGCount)
+        total += base64Length(document.presentation.customBackgroundData?.count ?? 0)
+        total += document.presentation.customBackgroundName?.utf8.count ?? 0
+        for layer in document.imageLayers {
+            total += base64Length(layer.pngData.count) + layer.name.utf8.count + 256
+        }
+        for annotation in annotations {
+            total += annotation.text.utf8.count + annotation.normalizedPoints.count * 64 + 512
+        }
+        return total
+    }
+
     static func decode(_ data: Data, sourceURL: URL? = nil) throws -> State {
         guard data.count <= maximumBytes else { throw CaptureProjectError.tooLarge }
         let decoder = JSONDecoder()
@@ -85,6 +126,7 @@ enum CaptureProjectStore {
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw CaptureProjectError.invalid }
         let image = NSImage(cgImage: cgImage, size: value.sourceLogicalSize)
         var document = CaptureDocument(image: image, sourceURL: sourceURL, createdAt: value.createdAt)
+        document.sourcePNGByteCount = value.sourcePNG.count
         document.geometry = value.geometry
         document.imageLayers = value.imageLayers ?? []
         document.presentation = value.presentation ?? CapturePresentation()

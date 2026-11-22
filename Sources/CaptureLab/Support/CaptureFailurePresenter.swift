@@ -19,7 +19,7 @@ final class CaptureFailurePresenter {
             while !pending.isEmpty {
                 let failure = pending.removeFirst()
                 let alert = Self.makeAlert(title: failure.title, message: failure.message)
-                NSApp.activate(ignoringOtherApps: true)
+                NSApp.activate()
                 let response = alert.captureLabRunModal()
                 if failure.message == L10n.screenRecordingPermission, response == .alertSecondButtonReturn,
                    let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {

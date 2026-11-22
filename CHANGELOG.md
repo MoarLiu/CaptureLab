@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.13.0 - 2026-11-22
+
+- Require macOS 14. The app stays a menu bar accessory (`LSUIElement`) and declares
+  why it needs screen recording. Release builds use the same strict concurrency
+  checks as local verification.
+- Keep uploads cancellable, re-sign each R2 retry, and stop a cancelled upload from
+  being reported as a failure. Add connection testing and a way to clear saved
+  R2 settings. Offer launch at login.
+- Stop project-file paths from escaping the history directory. Wait on the capture
+  process condition instead of polling, and copy the URL session configuration
+  before changing it for update downloads.
+- Cache layer dimensions and decoded bitmaps so importing several images does not
+  decode each earlier image again. Check the project size from known PNG bytes or
+  a pixel upper bound, without encoding the source image, and hand the export
+  window the rendered image directly.
+- Keep the previous export or background preview visible while a new one renders.
+  Cache history thumbnails and decode at most four at a time. Drag a history card
+  or quick-access preview itself out to another app.
+- Snap only the moving crop corner. Draw an object alignment guide only on the axis
+  that actually snapped, using the correct vertical threshold. A failed layer
+  composition no longer replaces the canvas with the empty state.
+- Continuous color, line-width, and nudge edits share one undo step, and undo no
+  longer switches the active tool back to selection. Recognition text scrolls
+  instead of stopping at eight lines. The first QR result is copied, and web links
+  can be opened. Result preview has a visible return-to-editing control.
+- Pins keep their image aspect ratio, zoom with the scroll wheel or trackpad, and
+  offer copy, save, edit, recognize, upload, reset, and close from the right-click menu.
+
+For macOS 13, use [CaptureLab 0.12.0](https://github.com/MoarLiu/CaptureLab/releases/tag/v0.12.0).
+Upgrading from an earlier version requires a one-time manual install from the
+0.13.0 DMG. In-app updates resume from 0.13.0 with the new signing key.
+See the [0.13.0 release notes](docs/0.13.0-release-notes.md) for upgrade guidance.
+
 ## 0.12.0 - 2026-10-24
 
 - Rebuild the menu bar menu with native icons, shortcut columns, task groups,

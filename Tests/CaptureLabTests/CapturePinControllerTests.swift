@@ -20,6 +20,7 @@ final class CapturePinControllerTests: XCTestCase {
         let imageView = try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? NSImageView }.first)
         XCTAssertEqual(imageView.imageScaling, .scaleProportionallyUpOrDown)
         XCTAssertEqual(imageView.image?.size, CGSize(width: 160, height: 96))
+        XCTAssertEqual(window.contentAspectRatio.width / window.contentAspectRatio.height, 160.0 / 96.0, accuracy: 0.001)
 
         window.setContentSize(CGSize(width: 540, height: 420))
         XCTAssertEqual(imageView.imageScaling, .scaleProportionallyUpOrDown)

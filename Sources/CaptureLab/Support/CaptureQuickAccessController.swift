@@ -194,6 +194,13 @@ private struct CaptureQuickAccessView: View {
                 if let image = entry.snapshot.image {
                     Image(nsImage: image).resizable().scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay {
+                            CaptureImageDragSource(
+                                snapshot: { entry.snapshot },
+                                chrome: .surface,
+                                onDragging: { controller.isDragging = $0 }
+                            )
+                        }
                 }
                 HStack(spacing: 12) {
                     action("doc.on.doc", L10n.copyEditedImage, entry.copy)

@@ -9,6 +9,9 @@ struct CaptureDocument {
     var geometry = CaptureDocumentGeometry()
     var imageLayers: [CaptureImageLayer] = []
     var presentation = CapturePresentation()
+    /// Bytes already produced for this source image. Budget checks use it
+    /// instead of encoding the bitmap again.
+    var sourcePNGByteCount: Int?
 
     var renderedPixelSize: CGSize { presentation.outputSize(for: pixelSize) ?? pixelSize }
 

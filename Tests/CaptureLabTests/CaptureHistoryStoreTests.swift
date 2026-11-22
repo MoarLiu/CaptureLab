@@ -885,6 +885,24 @@ final class CaptureHistoryStoreTests: XCTestCase {
         })
     }
 
+    func testProjectFileTraversalCannotEscapeHistoryDirectory() throws {
+        let fixture = try HistoryFixture()
+        let store = CaptureHistoryStore(environment: fixture.environment)
+        let item = try store.record(
+            data: Data([7, 8, 9]),
+            pixelSize: CGSize(width: 8, height: 8),
+            createdAt: Date(timeIntervalSince1970: 4)
+        )
+        let outside = fixture.home.appendingPathComponent("outside.capturelab")
+        let outsideData = Data("keep-project".utf8)
+        try outsideData.write(to: outside)
+        var escaped = item
+        escaped.projectFileName = "../../outside.capturelab"
+        try writeMetadata([escaped], to: store.metadataURL)
+        try store.remove(escaped)
+        XCTAssertEqual(try Data(contentsOf: outside), outsideData)
+    }
+
     private func makePNGData(color: NSColor) throws -> Data {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 3,

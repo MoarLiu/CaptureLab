@@ -101,16 +101,23 @@ final class CapturePNGPromiseProvider: NSFilePromiseProvider {
 }
 
 struct CaptureImageDragSource: NSViewRepresentable {
+    enum Chrome { case handle, surface }
     let snapshot: @MainActor () -> CaptureImageSnapshot?
     var isEnabled = true
+    var chrome: Chrome = .handle
     var onDragging: @MainActor (Bool) -> Void = { _ in }
+    var onClick: @MainActor () -> Void = {}
 
     func makeNSView(context: Context) -> CaptureImageDragView { CaptureImageDragView() }
     func updateNSView(_ view: CaptureImageDragView, context: Context) {
         view.snapshot = snapshot
         view.onDragging = onDragging
+        view.onClick = onClick
+        view.chrome = chrome
         view.isEnabled = isEnabled
-        view.alphaValue = isEnabled ? 1 : 0.35
+        view.alphaValue = chrome == .handle && !isEnabled ? 0.35 : 1
+        view.setAccessibilityElement(chrome == .handle)
+        view.needsDisplay = true
     }
 }
 
@@ -118,8 +125,11 @@ struct CaptureImageDragSource: NSViewRepresentable {
 final class CaptureImageDragView: NSView, NSDraggingSource {
     var snapshot: (() -> CaptureImageSnapshot?)?
     var onDragging: (Bool) -> Void = { _ in }
+    var onClick: () -> Void = {}
+    var chrome: CaptureImageDragSource.Chrome = .handle
     var isEnabled = true
     private var mouseOrigin: NSPoint?
+    private var didDrag = false
     override init(frame: NSRect) {
         super.init(frame: frame)
         toolTip = L10n.dragImage
@@ -129,16 +139,31 @@ final class CaptureImageDragView: NSView, NSDraggingSource {
     }
     required init?(coder: NSCoder) { nil }
     override func draw(_ dirtyRect: NSRect) {
+        guard chrome == .handle else { return }
         NSImage(systemSymbolName: "hand.draw", accessibilityDescription: L10n.dragImage)?
             .draw(in: bounds.insetBy(dx: 5, dy: 5))
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseDown(with event: NSEvent) { mouseOrigin = event.locationInWindow }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // A surface overlay must not hide the card's native context menu.
+        if NSApp.currentEvent?.type == .rightMouseDown { return nil }
+        return super.hitTest(point)
+    }
+    override func mouseDown(with event: NSEvent) {
+        mouseOrigin = event.locationInWindow
+        didDrag = false
+    }
+    override func mouseUp(with event: NSEvent) {
+        if mouseOrigin != nil, !didDrag, isEnabled { onClick() }
+        mouseOrigin = nil
+        didDrag = false
+    }
     override func mouseDragged(with event: NSEvent) {
         guard isEnabled, let origin = mouseOrigin,
-              hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 3,
-              let snapshot = snapshot?(), let image = snapshot.image else { return }
+              hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 3 else { return }
         mouseOrigin = nil
+        didDrag = true
+        guard let snapshot = snapshot?(), let image = snapshot.image else { return }
         let item = NSDraggingItem(pasteboardWriter: CapturePNGPromiseProvider(snapshot: snapshot))
         item.setDraggingFrame(NSRect(origin: convert(event.locationInWindow, from: nil),
                                     size: NSSize(width: 96, height: 72)), contents: image)

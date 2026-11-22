@@ -15,6 +15,7 @@ struct CapturePresentationView: View {
     @State private var presetName = ""
     @State private var errorMessage: String?
     @State private var previewImage: NSImage?
+    @State private var isRenderingPreview = false
     @State private var showsCustom = false
     @State private var showsPresetManagement = false
 
@@ -201,6 +202,12 @@ struct CapturePresentationView: View {
                     Text(L10n.text(en: "Choose a valid layout to preview.", zh: "选择有效的布局后显示预览。"))
                         .foregroundStyle(.secondary).padding()
                 }
+                if isRenderingPreview {
+                    ProgressView().controlSize(.small).padding(8)
+                        .background(.regularMaterial, in: Capsule())
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(10)
+                }
             }.frame(maxHeight: 360).clipShape(RoundedRectangle(cornerRadius: 8))
             if let size = draft.outputSize(for: sourceSize) {
                 Text("\(Int(size.width)) × \(Int(size.height)) px").monospacedDigit()
@@ -233,11 +240,13 @@ struct CapturePresentationView: View {
     }
     private func updatePreview() async {
         let requested = draft
-        previewImage = nil
         guard let source = sourceImage?.captureLabCGImage() else {
             previewImage = nil
+            isRenderingPreview = false
             return
         }
+        isRenderingPreview = true
+        defer { if requested == draft { isRenderingPreview = false } }
         do {
             try await Task.sleep(nanoseconds: 150_000_000)
             let result = try await CaptureExportWorker.shared.render(CaptureExportImage(image: source), presentation: requested)

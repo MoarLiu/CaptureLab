@@ -2,11 +2,17 @@
 
 CaptureLab is a native macOS menu bar app for screenshots and annotation.
 
-The **0.12.0 / build 19** UI/UX implementation is documented in the
+**CaptureLab 0.13.0 / build 20** requires macOS 14 or later.
+It keeps the 0.12.0 editor and adds the stability, performance,
+and interaction fixes described in the changelog. The **0.12.0 / build 19** UI/UX
+implementation remains documented in the
 [development plan](docs/0.12.0-development-plan.md) and
 [design and interaction specification](docs/0.12.0-ui-ux-spec.md).
-The [implementation and validation record](docs/0.12.0-validation.md) covers
-the current local development version; publication is separate.
+
+To upgrade from 0.12.0 or earlier, download the 0.13.0 DMG from GitHub, quit
+CaptureLab, and replace it in Applications. In-app updates resume from 0.13.0.
+See the [0.13.0 release notes](docs/0.13.0-release-notes.md) for installation
+details.
 
 Current features:
 
@@ -241,10 +247,11 @@ both `UpdateSigningIdentity` and `script/package_dmg.sh`, verify that they
 match, and make an encrypted backup of the private key. Packaging deliberately
 refuses any private key that differs from the embedded public key.
 
-Key rotation is not recovery. Existing apps trust the previously embedded key,
-so a rotation must be designed and shipped as a transition while the old
-private key is still available. Simply generating a replacement and changing
-the embedded public key will strand existing installations.
+Key rotation is not recovery. Existing apps continue to verify updates with
+their embedded public key. CaptureLab 0.13.0 introduces a new update-signing
+identity through a one-time manual install. Builds from 0.13.0 onward verify
+subsequent updates with the new key. The application code-signing identity and
+bundle identifier are the same across the transition.
 
 ## Cloudflare R2 credentials
 

@@ -118,7 +118,7 @@ struct CaptureLayersView: View {
         }
         .padding(12).frame(minWidth: 240, idealWidth: 270, maxWidth: 310)
         .onAppear(perform: synchronizeInspector)
-        .onChange(of: singleImage) { _ in synchronizeInspector() }
+        .onChange(of: singleImage) { synchronizeInspector() }
     }
 
     private func synchronizeInspector() {
@@ -182,6 +182,11 @@ struct CaptureLayersCanvasView: NSViewRepresentable {
     }
 }
 
+private struct AlignmentGuides {
+    var x: CGFloat?
+    var y: CGFloat?
+}
+
 @MainActor
 final class CaptureLayersNSCanvasView: NSView {
     private(set) var document: CaptureDocument?
@@ -200,7 +205,7 @@ final class CaptureLayersNSCanvasView: NSView {
     var previewDecodeCount: Int { previewRenderer.decodeCount }
     private var gesture: Gesture?
     private var marquee: CGRect?
-    private var guides: [CGFloat] = []
+    private var guides = AlignmentGuides()
 
     private struct Gesture {
         enum Kind { case move, resize(UUID, Int), rotate(UUID), marquee }
@@ -228,7 +233,7 @@ final class CaptureLayersNSCanvasView: NSView {
         let changed = self.document?.id != document.id || self.document?.imageLayers != document.imageLayers ||
             self.document?.geometry != document.geometry || (gesture?.annotations ?? self.annotations) != annotations || self.zoom != zoom
         if changed {
-            gesture = nil; marquee = nil; guides = []
+            gesture = nil; marquee = nil; guides = AlignmentGuides()
             layers = document.imageLayers; self.annotations = annotations; previewIsValid = false
         } else if gesture == nil {
             layers = document.imageLayers; self.annotations = annotations
@@ -316,11 +321,15 @@ final class CaptureLayersNSCanvasView: NSView {
             NSColor.controlAccentColor.withAlphaComponent(0.1).setFill(); marquee.fill()
             NSColor.controlAccentColor.setStroke(); NSBezierPath(rect: marquee).stroke()
         }
-        if guides.count == 2 {
+        if guides.x != nil || guides.y != nil {
             NSColor.systemPink.setStroke()
             let v = NSBezierPath()
-            v.move(to: viewPoint(for: CGPoint(x: guides[0], y: 0))); v.line(to: viewPoint(for: CGPoint(x: guides[0], y: 1)))
-            v.move(to: viewPoint(for: CGPoint(x: 0, y: guides[1]))); v.line(to: viewPoint(for: CGPoint(x: 1, y: guides[1])))
+            if let x = guides.x {
+                v.move(to: viewPoint(for: CGPoint(x: x, y: 0))); v.line(to: viewPoint(for: CGPoint(x: x, y: 1)))
+            }
+            if let y = guides.y {
+                v.move(to: viewPoint(for: CGPoint(x: 0, y: y))); v.line(to: viewPoint(for: CGPoint(x: 1, y: y)))
+            }
             v.setLineDash([4, 3], count: 2, phase: 0); v.stroke()
         }
     }
@@ -391,19 +400,28 @@ final class CaptureLayersNSCanvasView: NSView {
         switch g.kind {
         case .move:
             var dx = p.x - g.origin.x, dy = p.y - g.origin.y
-            guides = []
+            guides = AlignmentGuides()
             if g.selection.count == 1, let id = g.selection.first,
                let r = CaptureObjectOperations.rect(id, layers: g.layers, annotations: g.annotations) {
                 let targetX = r.midX + dx, targetY = r.midY + dy
                 let others = g.layers.filter { !g.selection.contains(.image($0.id)) }.map(\.normalizedRect)
                     + g.annotations.filter { !g.selection.contains(.annotation($0.id)) }.map(\.normalizedBounds)
                 let xs = [CGFloat(0.5)] + others.map(\.midX), ys = [CGFloat(0.5)] + others.map(\.midY)
-                let threshold = 5 / max(1, outputDisplayRect.width)
+                let thresholdX = 5 / max(1, outputDisplayRect.width)
+                let thresholdY = 5 / max(1, outputDisplayRect.height)
                 let snapX = xs.min { abs($0 - targetX) < abs($1 - targetX) }
                 let snapY = ys.min { abs($0 - targetY) < abs($1 - targetY) }
-                if let snapX, abs(snapX - targetX) < threshold { dx += snapX - targetX }
-                if let snapY, abs(snapY - targetY) < threshold { dy += snapY - targetY }
-                if dx != p.x - g.origin.x || dy != p.y - g.origin.y { guides = [r.midX + dx, r.midY + dy] }
+                var guideX: CGFloat?
+                var guideY: CGFloat?
+                if let snapX, abs(snapX - targetX) < thresholdX {
+                    dx += snapX - targetX
+                    guideX = r.midX + dx
+                }
+                if let snapY, abs(snapY - targetY) < thresholdY {
+                    dy += snapY - targetY
+                    guideY = r.midY + dy
+                }
+                guides = AlignmentGuides(x: guideX, y: guideY)
             }
             let result = CaptureObjectOperations.translated(layers: g.layers, annotations: g.annotations, selection: g.selection, dx: dx, dy: dy)
             layers = result.layers; annotations = result.annotations; previewIsValid = false
@@ -453,7 +471,7 @@ final class CaptureLayersNSCanvasView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         guard let g = gesture else { return }
-        gesture = nil; marquee = nil; guides = []
+        gesture = nil; marquee = nil; guides = AlignmentGuides()
         previewIsValid = false
         if layers != g.layers || annotations != g.annotations, !onCommit(layers, annotations) {
             layers = g.layers; annotations = g.annotations; previewIsValid = false
@@ -465,13 +483,13 @@ final class CaptureLayersNSCanvasView: NSView {
         if event.keyCode == 53 {
             if let g = gesture { layers = g.layers; annotations = g.annotations; select(g.selection); previewIsValid = false }
             else { select([]) }
-            gesture = nil; marquee = nil; guides = []; needsDisplay = true; return
+            gesture = nil; marquee = nil; guides = AlignmentGuides(); needsDisplay = true; return
         }
         if let g = gesture {
             // A keyboard edit during a pointer gesture starts from the last
             // committed state, avoiding a second mouseUp commit afterward.
             layers = g.layers; annotations = g.annotations; selection = g.selection
-            gesture = nil; marquee = nil; guides = []; previewIsValid = false
+            gesture = nil; marquee = nil; guides = AlignmentGuides(); previewIsValid = false
         }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "a" {
             select(Set(layers.map { .image($0.id) } + annotations.map { .annotation($0.id) })); return

@@ -27,15 +27,9 @@ struct CaptureImageLayer: Identifiable, Equatable, Codable {
 
     /// Reads dimensions without decoding the bitmap, including when validating
     /// untrusted project files before allocating any layered composition.
+    /// Repeated reads reuse the first result; `pngData` is immutable.
     var pixelSize: CGSize? {
-        guard !pngData.isEmpty, pngData.count <= CaptureLayerImport.maximumBytes,
-              let source = CGImageSourceCreateWithData(pngData as CFData, nil),
-              CGImageSourceGetType(source) as String? == "public.png",
-              let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = metadata[kCGImagePropertyPixelWidth] as? Int,
-              let height = metadata[kCGImagePropertyPixelHeight] as? Int else { return nil }
-        let size = CGSize(width: width, height: height)
-        return CaptureDocumentGeometry.validSize(size) ? size : nil
+        CaptureLayerBitmapCache.shared.pixelSize(id: id, data: pngData)
     }
 
     func corners(in sourceSize: CGSize) -> [CGPoint] {
@@ -86,6 +80,15 @@ enum CaptureLayerImport {
     static let maximumPixels: CGFloat = 100_000_000
 
     static func validate(_ layers: [CaptureImageLayer]) throws {
+        try validateBudget(layers)
+        // A PNG header can expose valid dimensions even when its pixels are
+        // missing. Decode each resource once and reuse that bitmap for composition.
+        for layer in layers where CaptureLayerBitmapCache.shared.image(id: layer.id, data: layer.pngData) == nil {
+            throw CaptureLayerError.invalidImage
+        }
+    }
+
+    static func validateBudget(_ layers: [CaptureImageLayer]) throws {
         guard layers.count <= maximumCount else { throw CaptureLayerError.resourceBudget }
         guard Set(layers.map(\.id)).count == layers.count else { throw CaptureLayerError.invalidImage }
         var bytes = 0
@@ -95,14 +98,6 @@ enum CaptureLayerImport {
             bytes += layer.pngData.count
             pixels += size.width * size.height
             guard bytes <= maximumBytes, pixels <= maximumPixels else { throw CaptureLayerError.resourceBudget }
-        }
-        // A PNG header can expose valid dimensions even when its pixels are
-        // missing. Reject it before installing a project or replacing layers.
-        // Check the combined budget first; defer bitmap caching to rendering.
-        for layer in layers {
-            guard let source = CGImageSourceCreateWithData(layer.pngData as CFData, nil),
-                  CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary) != nil
-            else { throw CaptureLayerError.invalidImage }
         }
     }
 
@@ -174,7 +169,104 @@ enum CaptureLayerImport {
         layer.normalizedRect = CGRect(x: min(visible.maxX - width, visible.midX - width / 2 + offset),
                                       y: min(visible.maxY - height, visible.midY - height / 2 + offset),
                                       width: width, height: height)
-        try validate(existing + [layer])
+        // Budget-check the whole stack, but decode only the new resource.
+        // Revalidating every previous bitmap made an N-image import decode O(N^2) times.
+        try validateBudget(existing + [layer])
+        guard CaptureLayerBitmapCache.shared.image(id: layer.id, data: layer.pngData) != nil else {
+            throw CaptureLayerError.invalidImage
+        }
         return layer
+    }
+}
+
+/// Pixel size and decoded bitmaps for immutable layer resources. Size entries
+/// stay small; bitmaps are cost-limited and shared by validation and composition.
+final class CaptureLayerBitmapCache: @unchecked Sendable {
+    static let shared = CaptureLayerBitmapCache()
+
+    private struct ResourceKey: Hashable {
+        var id: UUID
+        var count: Int
+        var head: UInt64
+        var tail: UInt64
+    }
+
+    private final class ImageKey: NSObject {
+        let key: ResourceKey
+        init(_ key: ResourceKey) { self.key = key }
+        override var hash: Int { key.hashValue }
+        override func isEqual(_ object: Any?) -> Bool { (object as? ImageKey)?.key == key }
+    }
+
+    private final class ImageBox: NSObject {
+        let image: CGImage
+        init(_ image: CGImage) { self.image = image }
+    }
+
+    private enum Measurement {
+        case size(CGSize)
+        case invalid
+    }
+
+    private let lock = NSLock()
+    private var sizes: [ResourceKey: Measurement] = [:]
+    private let images = NSCache<ImageKey, ImageBox>()
+
+    init() {
+        images.countLimit = 48
+        images.totalCostLimit = 160 * 1_024 * 1_024
+    }
+
+    func pixelSize(id: UUID, data: Data) -> CGSize? {
+        let key = Self.resourceKey(id: id, data: data)
+        lock.lock()
+        if let cached = sizes[key] {
+            lock.unlock()
+            switch cached {
+            case .size(let size): return size
+            case .invalid: return nil
+            }
+        }
+        lock.unlock()
+        let measured = Self.measure(data)
+        lock.lock()
+        if sizes[key] == nil {
+            if sizes.count > 512 { sizes.removeAll(keepingCapacity: true) }
+            sizes[key] = measured.map(Measurement.size) ?? .invalid
+        }
+        let resolved = sizes[key]
+        lock.unlock()
+        switch resolved {
+        case .size(let size): return size
+        case .invalid, nil: return measured
+        }
+    }
+
+    func image(id: UUID, data: Data) -> CGImage? {
+        let key = ImageKey(Self.resourceKey(id: id, data: data))
+        if let cached = images.object(forKey: key)?.image { return cached }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        images.setObject(ImageBox(image), forKey: key, cost: max(1, image.width * image.height * 4))
+        return image
+    }
+
+    private static func resourceKey(id: UUID, data: Data) -> ResourceKey {
+        func word(at offset: Int) -> UInt64 {
+            guard data.count >= offset + 8 else { return UInt64(data.count) }
+            return data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self) }
+        }
+        return ResourceKey(id: id, count: data.count, head: word(at: 0), tail: word(at: max(0, data.count - 8)))
+    }
+
+    private static func measure(_ data: Data) -> CGSize? {
+        guard !data.isEmpty, data.count <= CaptureLayerImport.maximumBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetType(source) as String? == "public.png",
+              let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = metadata[kCGImagePropertyPixelWidth] as? Int,
+              let height = metadata[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        let size = CGSize(width: width, height: height)
+        return CaptureDocumentGeometry.validSize(size) ? size : nil
     }
 }

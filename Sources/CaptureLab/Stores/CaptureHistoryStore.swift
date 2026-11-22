@@ -727,9 +727,22 @@ final class CaptureHistoryStore: ObservableObject {
     }
 
     private static func projectFileURL(fileName: String, historyDirectory: URL) -> URL? {
-        guard !fileName.isEmpty, !fileName.contains("/"), !fileName.contains("\0"),
-              URL(fileURLWithPath: fileName).pathExtension == "capturelab" else { return nil }
-        return historyDirectory.appendingPathComponent(fileName)
+        guard !fileName.isEmpty,
+              fileName != ".",
+              fileName != "..",
+              !fileName.contains("/"),
+              !fileName.contains("\0"),
+              URL(fileURLWithPath: fileName).pathExtension.lowercased() == "capturelab" else {
+            return nil
+        }
+        let standardizedDirectory = historyDirectory.standardizedFileURL
+        let candidate = standardizedDirectory
+            .appendingPathComponent(fileName, isDirectory: false)
+            .standardizedFileURL
+        guard candidate.deletingLastPathComponent() == standardizedDirectory else {
+            return nil
+        }
+        return candidate
     }
 
     private static func isRegularFile(_ url: URL) -> Bool {
